@@ -27,7 +27,6 @@ import {
 } from '../lib/analytics'
 import { checkSyncFrequency, recordSync } from '../lib/rate-limit'
 import { checkForUpdates, isUpdateDismissed } from '../lib/version-check'
-import { fetchRemoteConfig, fetchConfigIfNeeded } from '../lib/remote-config'
 
 const logger = createLogger('Background')
 
@@ -1126,38 +1125,9 @@ chrome.runtime.onInstalled.addListener(async details => {
   // 追踪安装/更新
   trackInstall(details.reason, details.previousVersion).catch(() => {})
 
-  // 拉取远程配置
-  fetchRemoteConfig().catch(() => {})
-
   // 记录安装时间（用于首次同步追踪）
   if (details.reason === 'install') {
     recordInstallTimestamp().catch(() => {})
-  }
-
-  // 升级时打开 changelog 页面
-  if (details.reason === 'update') {
-    const previousVersion = details.previousVersion || '0.0.0'
-    const currentVersion = chrome.runtime.getManifest().version
-
-    // 重要版本升级时显示更新日志
-    const showChangelogVersions = ['2.0.8', '2.0.9']
-    if (
-      showChangelogVersions.includes(currentVersion) ||
-      (previousVersion.startsWith('1.') && currentVersion.startsWith('2.'))
-    ) {
-      chrome.tabs.create({
-        url: 'https://www.wechatsync.com/changelog?from=' + previousVersion + '&to=' + currentVersion,
-        active: true,
-      })
-    }
-  }
-
-  // 首次安装时打开欢迎页
-  if (details.reason === 'install') {
-    chrome.tabs.create({
-      url: 'https://www.wechatsync.com/?utm_source=extension&utm_medium=install',
-      active: true,
-    })
   }
 })
 
@@ -1213,22 +1183,14 @@ preCheckPlatformsAuth()
 
 // 设置每日增长指标追踪
 chrome.alarms.create('daily_growth_metrics', { periodInMinutes: 24 * 60 })
-// 设置远程配置定期拉取（每 6 小时）
-chrome.alarms.create('remote_config_fetch', { periodInMinutes: 6 * 60 })
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'daily_growth_metrics') {
     trackGrowthMetrics().catch(() => {})
-  }
-  if (alarm.name === 'remote_config_fetch') {
-    fetchRemoteConfig().catch(() => {})
   }
 })
 
 // 首次启动时也追踪一次增长指标
 trackGrowthMetrics().catch(() => {})
-
-// 首次启动时拉取远程配置（带缓存检查）
-fetchConfigIfNeeded().catch(() => {})
 
 // 检查版本更新（用于 ZIP 安装用户）
 // 如有新版本，在扩展图标上显示 badge 提醒

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Github, Globe, Heart, MessageSquare, ExternalLink } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 
 export function AboutPage() {
   const navigate = useNavigate()
@@ -29,54 +29,12 @@ export function AboutPage() {
           一键将文章同步到多个平台
         </p>
 
-        {/* Links */}
-        <div className="flex flex-col gap-2 mt-6 w-full max-w-[240px]">
-          <a
-            href="https://github.com/wechatsync/Wechatsync"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg border hover:bg-muted transition-colors text-sm"
-          >
-            <Github className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">GitHub</span>
-            <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
-          </a>
-          <a
-            href="https://www.wechatsync.com/?utm_source=extension_about"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg border hover:bg-muted transition-colors text-sm"
-          >
-            <Globe className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">官网</span>
-            <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
-          </a>
-          <a
-            href="https://fun0.netlify.app/about/?utm_source=wechatsync"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg border hover:bg-muted transition-colors text-sm"
-          >
-            <Heart className="w-4 h-4 flex-shrink-0 text-red-400" />
-            <span className="flex-1">作者: fun</span>
-            <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
-          </a>
-          <a
-            href="https://txc.qq.com/products/105772"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2.5 px-4 py-2.5 rounded-lg border hover:bg-muted transition-colors text-sm"
-          >
-            <MessageSquare className="w-4 h-4 flex-shrink-0" />
-            <span className="flex-1">问题反馈</span>
-            <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
-          </a>
+        {/* Legal notice (GPL-3.0) */}
+        <div className="mt-6 w-full max-w-[280px] rounded-lg border p-3 text-xs text-muted-foreground leading-relaxed space-y-1">
+          <p className="font-medium text-foreground">版权声明</p>
+          <p>本程序为自由软件：你可依据自由软件基金会发布的 GNU 通用公共许可证（第三版或任意更高版本）自由分发与修改。</p>
+          <p>本程序不提供任何担保。详情请参阅 LICENSE 文件。</p>
         </div>
-
-        {/* Footer */}
-        <p className="text-xs text-muted-foreground mt-6">
-          如果觉得不错，请分享给你的朋友 ✌️
-        </p>
       </div>
     </div>
   )
