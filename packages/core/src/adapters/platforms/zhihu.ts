@@ -289,7 +289,7 @@ export class ZhihuAdapter extends CodeAdapter {
     // 检测 data URI，使用二进制上传
     if (src.startsWith('data:')) {
       logger.debug('Detected data URI, using binary upload')
-      const blob = await fetch(src).then(r => r.blob())
+      const blob = await this.runtime.fetch(src).then(r => r.blob())
       const url = await this.uploadImageBinaryInternal(blob)
       return { url }
     }

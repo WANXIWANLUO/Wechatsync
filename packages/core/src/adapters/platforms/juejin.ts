@@ -222,7 +222,7 @@ export class JuejinAdapter extends CodeAdapter {
         }
       )
 
-      // 6. 创建草稿 (参数来自 DSL juejin.yaml + juejin.transform.ts prepareBody)
+      // 6. 创建草稿
       const createResponse = await this.runtime.fetch(
         'https://api.juejin.cn/content_api/v1/article_draft/create',
         {
@@ -304,7 +304,7 @@ export class JuejinAdapter extends CodeAdapter {
       if (src.startsWith('data:')) {
         // data URI 直接转 blob
         logger.debug('Detected data URI, converting to blob')
-        blob = await fetch(src).then(r => r.blob())
+        blob = await this.runtime.fetch(src).then(r => r.blob())
       } else {
         // 远程 URL：先下载再上传
         logger.debug('Downloading remote image:', src.substring(0, 80))

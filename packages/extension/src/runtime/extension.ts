@@ -16,16 +16,62 @@ export class ExtensionRuntime implements RuntimeInterface {
   constructor(private config?: RuntimeConfig) {}
 
   /**
-   * HTTP 请求 - 自动携带 cookies，带超时保护
+   * 防盗链 Referer 映射：图片 CDN 域名 → 需要的 Referer
+   */
+  private static readonly IMAGE_REFERER_MAP: Record<string, string> = {
+    'mmbiz.qpic.cn': 'https://mp.weixin.qq.com/',
+    'mmbiz.qlogo.cn': 'https://mp.weixin.qq.com/',
+  }
+
+  /** 通配域名后缀 → Referer */
+  private static readonly IMAGE_REFERER_SUFFIXES: [string, string][] = [
+    ['.toutiaoimg.com', 'https://www.toutiao.com/'],
+  ]
+
+  private static getAutoReferer(hostname: string): string | undefined {
+    const exact = this.IMAGE_REFERER_MAP[hostname]
+    if (exact) return exact
+    for (const [suffix, referer] of this.IMAGE_REFERER_SUFFIXES) {
+      if (hostname.endsWith(suffix)) return referer
+    }
+    return undefined
+  }
+
+  /**
+   * HTTP 请求 - 自动携带 cookies，带超时保护，自动处理防盗链 Referer
    */
   async fetch(url: string, options?: RequestInit): Promise<Response> {
     const timeout = this.config?.timeout ?? DEFAULT_FETCH_TIMEOUT
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), timeout)
 
+    // 自动为已知的图片 CDN 添加防盗链 Referer
+    let mergedHeaders: Record<string, string> = {}
+    if (options?.headers) {
+      if (options.headers instanceof Headers) {
+        options.headers.forEach((v, k) => { mergedHeaders[k] = v })
+      } else if (Array.isArray(options.headers)) {
+        for (const [k, v] of options.headers) mergedHeaders[k] = v
+      } else {
+        mergedHeaders = { ...options.headers as Record<string, string> }
+      }
+    }
+
+    // 如果调用方没有显式设置 Referer，自动检测并添加
+    if (!mergedHeaders['Referer'] && !mergedHeaders['referer']) {
+      try {
+        const hostname = new URL(url).hostname
+        const referer = ExtensionRuntime.getAutoReferer(hostname)
+        if (referer) {
+          mergedHeaders['Referer'] = referer
+        }
+      } catch { /* URL 解析失败则跳过 */ }
+    }
+
     try {
       const response = await fetch(url, {
         ...options,
+        headers: mergedHeaders,
         credentials: 'include',
         signal: controller.signal,
       })

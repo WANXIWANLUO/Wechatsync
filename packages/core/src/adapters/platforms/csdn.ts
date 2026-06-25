@@ -208,6 +208,18 @@ export class CSDNAdapter extends CodeAdapter {
       // Get HTML content (CSDN API needs both markdown and HTML)
       const htmlContent = article.html || ''
 
+      // Upload cover image
+      let coverImages: string[] = []
+      if (article.cover) {
+        try {
+          const coverResult = await this.uploadImageByUrl(article.cover)
+          coverImages = [coverResult.url]
+          logger.debug('Cover uploaded:', coverResult.url)
+        } catch (e) {
+          logger.warn('Failed to upload cover:', e)
+        }
+      }
+
       // Generate signature and save article
       const apiPath = '/blog-console-api/v3/mdeditor/saveArticle'
       const headers = await this.signRequest(apiPath)
@@ -232,7 +244,7 @@ export class CSDNAdapter extends CodeAdapter {
             authorized_status: false,
             not_auto_saved: '1',
             source: 'pc_mdeditor',
-            cover_images: [],
+            cover_images: coverImages,
             cover_type: 1,
             is_new: 1,
             vote_id: 0,
@@ -292,7 +304,7 @@ export class CSDNAdapter extends CodeAdapter {
    */
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
     // 1. 下载图片
-    const imageResponse = await fetch(src)
+    const imageResponse = await this.runtime.fetch(src)
     if (!imageResponse.ok) {
       throw new Error('图片下载失败: ' + src)
     }

@@ -1,213 +1,74 @@
 /**
  * 微信公众号文章页 Content Script
- * FAB 按钮 → 打开 SyncDialog iframe overlay
+ * 标题旁行内按钮 + 响应 popup 的提取请求
  */
 
 import { htmlToMarkdownNative, type PreprocessConfig } from '@wechatsync/core'
 import { preprocessContentDOM, preprocessForPlatform, backupAndSimplifyCodeBlocks, restoreCodeBlocks } from '../lib/content-processor'
-import { createSyncFab } from '../lib/fab'
 
 ;(() => {
 
-let dialogIframe: HTMLIFrameElement | null = null
-let dialogContainer: HTMLElement | null = null
-
 function injectSyncButton() {
-  const articleContent = document.querySelector('#js_content')
-  if (!articleContent) return
-  if (document.querySelector('#wechatsync-fab')) return
+  const titleEl = document.querySelector('#activity-name') as HTMLElement | null
+  if (!titleEl) return
+  if (document.querySelector('#wechatsync-inline-weixin')) return
 
-  const fab = createSyncFab({
-    onClick: () => openSyncDialog(),
+  const btn = document.createElement('span')
+  btn.id = 'wechatsync-inline-weixin'
+  btn.setAttribute('data-wechatsync-ui', '')
+  btn.innerHTML = `
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="margin-right:3px;flex-shrink:0;vertical-align:middle;opacity:0.55;" class="wcs-icon">
+      <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+    </svg>
+    同步
+  `
+  btn.title = '同步文章到多平台'
+  btn.style.cssText = `
+    display: inline-flex !important;
+    align-items: center !important;
+    margin-left: 12px !important;
+    padding: 2px 10px !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(128,128,128,0.25) !important;
+    background: transparent !important;
+    cursor: pointer !important;
+    color: rgba(0,0,0,0.35) !important;
+    font-size: 12px !important;
+    font-weight: 400 !important;
+    font-family: inherit !important;
+    vertical-align: middle !important;
+    line-height: 1.5 !important;
+    transition: color 0.2s, border-color 0.2s, background 0.2s !important;
+    user-select: none !important;
+    white-space: nowrap !important;
+    position: relative !important;
+    z-index: 9999 !important;
+    box-shadow: none !important;
+  `
+
+  btn.addEventListener('mouseenter', () => {
+    btn.style.color = '#07c160'
+    btn.style.borderColor = 'rgba(7,193,96,0.4)'
+    btn.style.background = 'rgba(7,193,96,0.05)'
+    const icon = btn.querySelector('.wcs-icon') as SVGElement | null
+    if (icon) icon.style.opacity = '1'
+  })
+  btn.addEventListener('mouseleave', () => {
+    btn.style.color = 'rgba(0,0,0,0.35)'
+    btn.style.borderColor = 'rgba(128,128,128,0.25)'
+    btn.style.background = 'transparent'
+    const icon = btn.querySelector('.wcs-icon') as SVGElement | null
+    if (icon) icon.style.opacity = '0.55'
   })
 
-  document.body.appendChild(fab)
-}
-
-/**
- * Open sync dialog iframe overlay.
- * Shows loading indicator immediately, then swaps to dialog when ready.
- */
-async function openSyncDialog() {
-  if (dialogContainer) return
-
-  // 1. Show loading overlay immediately
-  dialogContainer = document.createElement('div')
-  dialogContainer.id = 'wechatsync-dialog-overlay'
-  dialogContainer.style.cssText = `
-    position: fixed; inset: 0; z-index: 2147483647;
-    display: flex; align-items: center; justify-content: center;
-    background: rgba(0,0,0,0.3);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  `
-  dialogContainer.addEventListener('click', (e) => {
-    if (e.target === dialogContainer) closeSyncDialog()
+  btn.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'TRIGGER_OPEN_EDITOR' }).catch(() => {})
   })
 
-  const loadingEl = document.createElement('div')
-  loadingEl.style.cssText = `
-    background: white; padding: 20px 32px; border-radius: 12px;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-    display: flex; align-items: center; gap: 12px;
-  `
-  loadingEl.innerHTML = `
-    <div style="width:20px;height:20px;border:3px solid #e5e5e5;border-top-color:#07c160;border-radius:50%;animation:wcs-spin 0.8s linear infinite;"></div>
-    <span style="font-size:14px;color:#333;">正在提取文章...</span>
-    <style>@keyframes wcs-spin { to { transform: rotate(360deg); } }</style>
-  `
-  dialogContainer.appendChild(loadingEl)
-  document.body.appendChild(dialogContainer)
-
-  // 2. Extract article + load platforms in parallel
-  const [article, platformResp] = await Promise.all([
-    Promise.resolve(extractWeixinArticle()),
-    chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH' }).catch(() => ({ platforms: [] })),
-  ])
-
-  if (!article) {
-    chrome.runtime.sendMessage({
-      type: 'TRACK_ARTICLE_EXTRACT',
-      payload: { source: 'weixin', success: false },
-    }).catch(() => {})
-    closeSyncDialog()
-    return
-  }
-
-  chrome.runtime.sendMessage({
-    type: 'TRACK_ARTICLE_EXTRACT',
-    payload: {
-      source: 'weixin', success: true,
-      hasTitle: !!article.title, hasContent: !!article.content,
-      hasCover: !!article.cover, contentLength: article.content?.length || 0,
-    },
-  }).catch(() => {})
-
-  const platforms = platformResp.platforms || []
-
-  // 3. Swap loading for iframe
-  if (!dialogContainer) return // closed during loading
-  loadingEl.remove()
-
-  dialogIframe = document.createElement('iframe')
-  dialogIframe.src = chrome.runtime.getURL('src/sync-dialog/index.html')
-  dialogIframe.style.cssText = `
-    width: 400px; height: 520px; border: none;
-    border-radius: 12px; overflow: hidden;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-  `
-  dialogContainer.appendChild(dialogIframe)
-
-  // 4. Send data when iframe is ready
-  const handleReady = (event: MessageEvent) => {
-    try {
-      const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
-      if (data.type === 'SYNC_DIALOG_READY') {
-        window.removeEventListener('message', handleReady)
-        dialogIframe?.contentWindow?.postMessage(JSON.stringify({
-          type: 'INIT_DATA',
-          article,
-          platforms,
-        }), '*')
-      }
-    } catch { /* ignore */ }
-  }
-  window.addEventListener('message', handleReady)
+  titleEl.appendChild(btn)
 }
 
-function closeSyncDialog() {
-  if (dialogContainer) {
-    dialogContainer.remove()
-    dialogContainer = null
-    dialogIframe = null
-  }
-}
-
-// Listen to messages from iframe
-window.addEventListener('message', (event) => {
-  try {
-    const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
-
-    if (data.type === 'CLOSE_SYNC_DIALOG') {
-      closeSyncDialog()
-    } else if (data.type === 'START_SYNC') {
-      // Forward sync request to background
-      const syncId = data.syncId
-      chrome.runtime.sendMessage({
-        type: 'SYNC_ARTICLE',
-        payload: {
-          article: data.article,
-          platforms: data.platforms,
-          source: 'weixin',
-          syncId,
-        },
-      }).then(response => {
-        // Forward completion to iframe
-        dialogIframe?.contentWindow?.postMessage(JSON.stringify({
-          type: 'SYNC_COMPLETE',
-          results: response.results,
-          rateLimitWarning: response.rateLimitWarning,
-          syncId,
-        }), '*')
-      }).catch(error => {
-        dialogIframe?.contentWindow?.postMessage(JSON.stringify({
-          type: 'SYNC_ERROR',
-          error: (error as Error).message,
-          syncId,
-        }), '*')
-      })
-    }
-  } catch { /* ignore */ }
-})
-
-// Forward progress messages from background to iframe
-chrome.runtime.onMessage.addListener((message) => {
-  if (!dialogIframe) return
-
-  if (message.type === 'SYNC_PROGRESS') {
-    dialogIframe.contentWindow?.postMessage(JSON.stringify({
-      type: 'SYNC_PROGRESS',
-      result: message.payload?.result,
-      syncId: message.syncId,
-    }), '*')
-  }
-  if (message.type === 'SYNC_DETAIL_PROGRESS') {
-    dialogIframe.contentWindow?.postMessage(JSON.stringify({
-      type: 'SYNC_DETAIL_PROGRESS',
-      progress: message.payload,
-      syncId: message.syncId,
-    }), '*')
-  }
-})
-
-// Respond to popup's article extraction request and preprocessing
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === 'EXTRACT_ARTICLE') {
-    const article = extractWeixinArticle()
-    sendResponse({ article })
-    return true
-  }
-
-  if (message.type === 'PREPROCESS_FOR_PLATFORMS') {
-    const { rawHtml, platforms, configs } = message.payload as {
-      rawHtml: string
-      platforms: string[]
-      configs: Record<string, PreprocessConfig>
-    }
-    const platformContents: Record<string, { html: string; markdown: string }> = {}
-    for (const platformId of platforms) {
-      const config = configs[platformId]
-      if (config) {
-        platformContents[platformId] = preprocessForPlatform(rawHtml, config)
-      }
-    }
-    sendResponse({ platformContents })
-    return true
-  }
-})
-
-/**
- * Extract WeChat article from page DOM
- */
+// 提取文章（only used by popup's EXTRACT_ARTICLE）
 function extractWeixinArticle() {
   const title = document.querySelector('#activity-name')?.textContent?.trim()
   const contentEl = document.querySelector('#js_content')
@@ -216,9 +77,7 @@ function extractWeixinArticle() {
 
   if (!title || !contentEl) return null
 
-  // 保存原始 HTML（微信到微信同步时直接使用，避免代码块格式丢失）
   const rawHtml = contentEl.innerHTML
-
   const codeBlockBackups = backupAndSimplifyCodeBlocks(contentEl)
 
   try {
@@ -245,10 +104,50 @@ function extractWeixinArticle() {
   }
 }
 
-// Inject on page load
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', injectSyncButton)
-} else {
-  injectSyncButton()
+// 只响应 popup 的 EXTRACT_ARTICLE，其他消息交给 extractor.ts 处理
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === 'EXTRACT_ARTICLE') {
+    const article = extractWeixinArticle()
+    sendResponse({ article })
+    return true
+  }
+  // 不处理其他消息，返回 false 让 Chrome 忽略
+  return false
+})
+
+// 按钮注入
+function tryInject() {
+  if (document.querySelector('#activity-name') && document.querySelector('#js_content')) {
+    injectSyncButton()
+    return true
+  }
+  return false
 }
+
+// 首次尝试
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => setTimeout(tryInject, 300))
+} else {
+  setTimeout(tryInject, 300)
+}
+
+// 兜底 MutationObserver
+let weixinObserver: MutationObserver | null = null
+let weixinRetries = 0
+setTimeout(() => {
+  if (tryInject()) return
+
+  weixinObserver = new MutationObserver(() => {
+    weixinRetries++
+    if (tryInject() || weixinRetries >= 10) {
+      weixinObserver?.disconnect()
+      weixinObserver = null
+    }
+  })
+  weixinObserver.observe(document.body || document.documentElement, { childList: true, subtree: true })
+  setTimeout(() => {
+    weixinObserver?.disconnect()
+    weixinObserver = null
+  }, 15000)
+}, 1000)
 })()

@@ -234,7 +234,7 @@ export class YuqueAdapter extends CodeAdapter {
       throw new Error('文档 ID 未设置')
     }
 
-    const imageResponse = await fetch(src)
+    const imageResponse = await this.runtime.fetch(src)
     if (!imageResponse.ok) {
       throw new Error('图片下载失败: ' + src)
     }

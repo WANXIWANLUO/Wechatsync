@@ -273,7 +273,7 @@ export class WeixinAdapter extends CodeAdapter {
       throw new Error('未登录')
     }
 
-    const imageResponse = await fetch(src)
+    const imageResponse = await this.runtime.fetch(src)
     if (!imageResponse.ok) {
       throw new Error('图片下载失败: ' + src)
     }

@@ -243,7 +243,7 @@ export class SohuAdapter extends CodeAdapter {
     }
 
     // 1. 下载图片
-    const imageResponse = await fetch(src)
+    const imageResponse = await this.runtime.fetch(src)
     if (!imageResponse.ok) {
       throw new Error('图片下载失败: ' + src)
     }

@@ -20,7 +20,7 @@ export class BaijiahaoAdapter extends CodeAdapter {
     name: '百家号',
     icon: 'https://www.baidu.com/favicon.ico',
     homepage: 'https://baijiahao.baidu.com/',
-    capabilities: ['article', 'draft', 'image_upload'],
+    capabilities: ['article', 'draft', 'image_upload', 'cover'],
   }
 
   /** 预处理配置: 百家号使用 HTML 格式 */
@@ -111,6 +111,41 @@ export class BaijiahaoAdapter extends CodeAdapter {
         }
       )
 
+      // 上传封面图到百家号图片代理
+      let coverImages = '[]'
+      if (article.cover) {
+        try {
+          const coverUrl = await this.uploadCoverImage(article.cover)
+          coverImages = JSON.stringify([{
+            src: coverUrl,
+            cropData: {},
+            machine_chooseimg: 0,
+            isLegal: 0,
+            cover_source_tag: 'text',
+          }])
+          logger.debug('Cover uploaded:', coverUrl)
+        } catch (e) {
+          logger.warn('Failed to upload cover:', e)
+        }
+      }
+
+      const bodyParams: Record<string, string> = {
+        title: article.title,
+        content: content,
+        feed_cat: '1',
+        len: String(content.length),
+        activity_list: JSON.stringify([{ id: 408, is_checked: 0 }]),
+        source_reprinted_allow: '0',
+        original_status: '0',
+        original_handler_status: '1',
+        isBeautify: 'false',
+        subtitle: '',
+        bjhtopic_id: '',
+        bjhtopic_info: '',
+        type: 'news',
+        cover_images: coverImages,
+      }
+
       const response = await this.runtime.fetch(
         'https://baijiahao.baidu.com/pcui/article/save?callback=bjhdraft',
         {
@@ -120,21 +155,7 @@ export class BaijiahaoAdapter extends CodeAdapter {
             'Content-Type': 'application/x-www-form-urlencoded',
             'token': this.authToken,
           },
-          body: new URLSearchParams({
-            title: article.title,
-            content: content,
-            feed_cat: '1',
-            len: String(content.length),
-            activity_list: JSON.stringify([{ id: 408, is_checked: 0 }]),
-            source_reprinted_allow: '0',
-            original_status: '0',
-            original_handler_status: '1',
-            isBeautify: 'false',
-            subtitle: '',
-            bjhtopic_id: '',
-            bjhtopic_info: '',
-            type: 'news',
-          }),
+          body: new URLSearchParams(bodyParams),
         }
       )
 
@@ -165,8 +186,50 @@ export class BaijiahaoAdapter extends CodeAdapter {
     }))
   }
 
+  /**
+   * 上传封面图到百家号图片代理
+   * POST https://baijiahao.baidu.com/pcui/picture/processproxy
+   * body: action[0]=save&base64=<base64>
+   * returns: { ret: { url: "https://baijiahao.baidu.com/bjh/picproxy?param=..." } }
+   */
+  private async uploadCoverImage(src: string): Promise<string> {
+    // 下载图片并转 base64
+    const imageResponse = await this.runtime.fetch(src)
+    if (!imageResponse.ok) throw new Error('封面图下载失败: ' + src)
+    const buffer = await imageResponse.arrayBuffer()
+    const base64 = btoa(
+      new Uint8Array(buffer).reduce((d, b) => d + String.fromCharCode(b), '')
+    )
+
+    const body = new URLSearchParams({
+      'action[0]': 'save',
+      base64: ',' + base64,
+    })
+
+    const uploadResponse = await this.runtime.fetch(
+      'https://baijiahao.baidu.com/pcui/picture/processproxy',
+      {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      }
+    )
+
+    const res = await uploadResponse.json() as {
+      errno: number
+      errmsg: string
+      ret?: { url: string }
+    }
+
+    if (res.errno !== 0 || !res.ret?.url) {
+      throw new Error('封面上传失败: ' + (res.errmsg || '未知错误'))
+    }
+    return res.ret.url
+  }
+
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
-    const imageResponse = await fetch(src)
+    const imageResponse = await this.runtime.fetch(src)
     if (!imageResponse.ok) {
       throw new Error('图片下载失败: ' + src)
     }

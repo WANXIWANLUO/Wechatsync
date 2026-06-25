@@ -21,7 +21,7 @@ export class BilibiliAdapter extends CodeAdapter {
     name: '哔哩哔哩',
     icon: 'https://www.bilibili.com/favicon.ico',
     homepage: 'https://member.bilibili.com/platform/upload/text',
-    capabilities: ['article', 'draft', 'image_upload'],
+    capabilities: ['article', 'draft', 'image_upload', 'cover'],
   }
 
   /** 预处理配置: B站使用 HTML，移除外链 */
@@ -112,20 +112,37 @@ export class BilibiliAdapter extends CodeAdapter {
         }
       )
 
+      // 上传封面图
+      let imageUrls = ''
+      if (article.cover) {
+        try {
+          const coverResult = await this.uploadImageByUrl(article.cover)
+          imageUrls = coverResult.url
+          logger.debug('Cover uploaded:', coverResult.url)
+        } catch (e) {
+          logger.warn('Failed to upload cover:', e)
+        }
+      }
+
+      const draftBody: Record<string, string> = {
+        tid: '4',
+        title: article.title,
+        content: content,
+        csrf: this.csrf,
+        save: '0',
+        pgc_id: '0',
+      }
+      if (imageUrls) {
+        draftBody.image_urls = imageUrls
+      }
+
       const res = await this.postForm<{
         code: number
         message?: string
         data?: { aid: number }
       }>(
         'https://api.bilibili.com/x/article/creative/draft/addupdate',
-        {
-          tid: '4',
-          title: article.title,
-          content: content,
-          csrf: this.csrf,
-          save: '0',
-          pgc_id: '0',
-        }
+        draftBody
       )
 
       logger.debug('Draft response:', res)
@@ -146,25 +163,71 @@ export class BilibiliAdapter extends CodeAdapter {
     }))
   }
 
+  // WBI 签名密钥（从 B站 nav API 获取）
+  private mixinKey: string | null = null
+
+  private async getMixinKey(): Promise<string> {
+    if (this.mixinKey) return this.mixinKey
+    const res = await this.get<{ data?: { wbi_img?: { img_url: string; sub_url: string } } }>(
+      'https://api.bilibili.com/x/web-interface/nav'
+    )
+    const imgUrl = res.data?.wbi_img?.img_url || ''
+    const subUrl = res.data?.wbi_img?.sub_url || ''
+    const imgKey = imgUrl.substring(imgUrl.lastIndexOf('/') + 1).split('.')[0]
+    const subKey = subUrl.substring(subUrl.lastIndexOf('/') + 1).split('.')[0]
+    const rawKey = imgKey + subKey
+    const mixinKeyChars: number[] = [46,47,6,2,53,24,9,18,56,15,33,22,23,13,3,29,41,35,8,50,7,30,37,11,51,14]
+    this.mixinKey = mixinKeyChars.map(i => rawKey[i]).join('')
+    return this.mixinKey
+  }
+
+  /** WBI 签名 */
+  private async wbiSign(params: Record<string, string>): Promise<{ w_rid: string; wts: string }> {
+    const mixinKey = await this.getMixinKey()
+    const wts = String(Math.floor(Date.now() / 1000))
+    const sorted = Object.entries({ ...params, wts })
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join('&')
+    const encoder = new TextEncoder()
+    const data = encoder.encode(sorted + mixinKey)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+    const hashArray = Array.from(new Uint8Array(hashBuffer))
+    const w_rid = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+    return { w_rid, wts }
+  }
+
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
     if (!this.csrf) {
       throw new Error('CSRF token 未获取')
     }
 
-    const imageResponse = await fetch(src)
+    // 使用 runtime.fetch() 自动处理 Referer 防盗链
+    const imageResponse = await this.runtime.fetch(src)
     if (!imageResponse.ok) {
       throw new Error('图片下载失败: ' + src)
     }
     const imageBlob = await imageResponse.blob()
 
     const formData = new FormData()
-    formData.append('binary', imageBlob, 'image.jpg')
+    formData.append('file_up', imageBlob, 'image.jpg')
+    formData.append('biz', 'new_dyn')
+    formData.append('category', 'daily')
     formData.append('csrf', this.csrf)
 
-    const uploadUrl = 'https://api.bilibili.com/x/article/creative/article/upcover'
+    const { w_rid, wts } = await this.wbiSign({
+      biz: 'new_dyn',
+      category: 'daily',
+      csrf: this.csrf,
+    })
+
+    const uploadUrl = `https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs?w_rid=${w_rid}&wts=${wts}`
     const uploadResponse = await this.runtime.fetch(uploadUrl, {
       method: 'POST',
       credentials: 'include',
+      headers: {
+        'Origin': 'https://member.bilibili.com',
+      },
       body: formData,
     })
 
@@ -172,21 +235,26 @@ export class BilibiliAdapter extends CodeAdapter {
       code: number
       message?: string
       data?: {
-        url: string
-        size: number
+        image_url: string
+        image_width?: number
+        image_height?: number
       }
     }
 
-    logger.debug('Image upload response:', res)
+    logger.debug('B站图片上传:', res)
 
-    if (res.code !== 0 || !res.data?.url) {
+    if (res.code !== 0 || !res.data?.image_url) {
       throw new Error(res.message || '图片上传失败')
     }
 
+    // 确保使用 HTTPS
+    const imageUrl = res.data.image_url.replace(/^http:/, 'https:')
+
     return {
-      url: res.data.url,
+      url: imageUrl,
       attrs: {
-        size: String(res.data.size),
+        width: res.data.image_width ? String(res.data.image_width) : '',
+        height: res.data.image_height ? String(res.data.image_height) : '',
       },
     }
   }

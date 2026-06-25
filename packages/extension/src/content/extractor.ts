@@ -35,29 +35,65 @@ interface ExtractedArticle {
 /**
  * 提取文章内容
  */
+/**
+ * 强制加载页面上所有懒加载图片
+ * 策略：延时滚动页面触发所有图片加载，再滚回原位
+ */
+async function preloadLazyImages(): Promise<void> {
+  const scrollY = window.scrollY
+  const scrollX = window.scrollX
+  const totalHeight = document.body.scrollHeight
+  const viewportHeight = window.innerHeight
+  const stepDelay = 150 // 每步停留时间(ms)，让懒加载触发
+
+  // 如果页面很短，不需要滚动
+  if (totalHeight <= viewportHeight * 1.5) return
+
+  // 快速滚动到底部再滚回来，触发所有懒加载
+  for (let pos = viewportHeight; pos <= totalHeight; pos += viewportHeight) {
+    window.scrollTo({ left: scrollX, top: pos, behavior: 'instant' as ScrollBehavior })
+    await new Promise(r => setTimeout(r, stepDelay))
+  }
+  // 滚回原位
+  window.scrollTo({ left: scrollX, top: scrollY, behavior: 'instant' as ScrollBehavior })
+}
+
 async function extractArticle(): Promise<ExtractedArticle | null> {
   const url = window.location.href
 
-  // 微信公众号
-  if (url.includes('mp.weixin.qq.com')) {
-    return extractWeixinArticle()
-  }
+  // 提取前先隐藏 WeChatSync 的 UI 元素，避免按钮文字混入文章
+  const uiElements = document.querySelectorAll('[data-wechatsync-ui]')
+  const uiDisplay: string[] = []
+  uiElements.forEach(el => {
+    uiDisplay.push((el as HTMLElement).style.display)
+    ;(el as HTMLElement).style.display = 'none'
+  })
 
-  // 飞书文档（fetch HTML 解析 script 中的 clientVars）
-  if (window.location.hostname.endsWith('.feishu.cn') || window.location.hostname.endsWith('.larksuite.com')) {
-    const result = await extractFeishuArticle()
-    if (result) return result
-  }
+  // 滚动页面触发所有懒加载图片
+  await preloadLazyImages()
 
-  // 按域名匹配的站点特定提取
-  const siteConfig = findSiteConfig(window.location.hostname)
-  if (siteConfig) {
-    const result = extractWithSiteConfig(siteConfig)
-    if (result) return result
+  try {
+    if (url.includes('mp.weixin.qq.com')) {
+      return extractWeixinArticle()
+    }
+    if (window.location.hostname.endsWith('.feishu.cn') || window.location.hostname.endsWith('.larksuite.com')) {
+      const result = await extractFeishuArticle()
+      if (result) return result
+    }
+    const siteConfig = findSiteConfig(window.location.hostname)
+    if (siteConfig) {
+      const result = extractWithSiteConfig(siteConfig)
+      if (result) return result
+    }
+    return extractGenericArticle()
+  } finally {
+    // 恢复 WeChatSync UI 元素显示
+    uiElements.forEach((el, i) => {
+      if (uiDisplay[i] !== undefined) {
+        ;(el as HTMLElement).style.display = uiDisplay[i]
+      }
+    })
   }
-
-  // 通用提取 (使用 Safari Reader / Readability)
-  return extractGenericArticle()
 }
 
 /**
@@ -683,6 +719,19 @@ const SITE_CONFIGS: SiteExtractConfig[] = [
     removeSelectors: ['.anchor', 'a[aria-hidden="true"]', '[data-testid]', '.octicon', '.zeroclipboard-container', '.btn-octicon'],
     unwrapHeadingSelectors: ['.markdown-heading'],
   },
+  {
+    domains: ['csdn.net', 'csdn.com'],
+    platform: 'csdn',
+    contentSelector: 'article.baidu_pl, #content_views, .article-content',
+    titleSelectors: ['.title-article', 'h1.title', '#articleContentId h1'],
+    removeSelectors: [
+      '.article-info-box', '.blog-tags-box', '.more-toolbox',
+      '.recommend-box', '.aside-box', '.praise-box',
+      '.csdn-side-toolbar', '.toolbar-box',
+      '.comment-box', '.recommend-item-box',
+      'pre[class*="set-code-hide"]',
+    ],
+  },
   // 飞书/Lark 使用虚拟滚动，由 extractFeishuArticle() 通过 fetch + clientVars 解析提取
 ]
 
@@ -813,8 +862,38 @@ function readerResultToArticle(result: ReaderResult): ExtractedArticle {
 /**
  * 使用 CSS 选择器提取 (最后手段)
  */
+/**
+ * 从克隆的 DOM 中移除页面组件（导航、侧栏、页脚、广告、扩展自身 UI 等）
+ */
+function stripPageComponents(root: HTMLElement): void {
+  // 先移除 WeChatSync 自身的 UI 元素，避免按钮文字混入文章
+  root.querySelectorAll('[data-wechatsync-ui]').forEach(el => el.remove())
+
+  const removeSelectors = [
+    'nav', 'header', 'footer',
+    '.nav', '.navbar', '.navigation',
+    '.header', '.footer',
+    '.sidebar', '.side-bar', '.aside',
+    '.ad', '.advertisement', '.ads',
+    '.comment', '.comments', '.comment-list',
+    '.related', '.recommend', '.recommendation',
+    '.share', '.social', '.social-share',
+    '.toolbar', '.tool-bar',
+    '.copyright', '.license',
+    '.breadcrumb', '.breadcrumbs',
+    '.catalog', '.toc', '.table-of-contents',
+    '[role="navigation"]', '[role="banner"]', '[role="contentinfo"]',
+    '#nav', '#header', '#footer', '#sidebar', '#comments',
+    '.recommend-box', '.aside-box', '.article-info-box',
+    '.blog-tags-box', '.more-toolbox', '.praise-box',
+    '.csdn-side-toolbar', '.tool_active', '.toolbar-box',
+  ]
+  for (const sel of removeSelectors) {
+    root.querySelectorAll(sel).forEach(el => el.remove())
+  }
+}
+
 function extractWithSelectors(): ExtractedArticle | null {
-  // 尝试常见的文章选择器
   const selectors = {
     title: [
       'h1',
@@ -846,15 +925,15 @@ function extractWithSelectors(): ExtractedArticle | null {
   for (const selector of selectors.content) {
     const el = document.querySelector(selector)
     if (el?.innerHTML) {
-      // 在原始 DOM 上简化代码块
       const codeBlockBackups = backupAndSimplifyCodeBlocks(el)
 
       try {
-        // 克隆并预处理
         const clonedContent = el.cloneNode(true) as HTMLElement
 
-        // 恢复原始 DOM
         restoreCodeBlocks(codeBlockBackups)
+
+        // 移除页面组件
+        stripPageComponents(clonedContent)
 
         preprocessContentDOM(clonedContent)
         html = clonedContent.innerHTML
@@ -895,6 +974,201 @@ function extractWithSelectors(): ExtractedArticle | null {
   }
 }
 
+// ========== 文章检测 ==========
+
+/**
+ * 轻量级文章检测 — 判断当前页面是否包含可提取的文章
+ * 返回文章标题元素和内容容器的位置参考信息
+ */
+interface ArticleDetection {
+  titleEl: HTMLElement      // 文章标题元素
+  contentEl: HTMLElement    // 文章内容容器
+  platform: string          // 检测到的平台标识
+}
+
+function detectArticle(): ArticleDetection | null {
+  const url = window.location.href
+  const hostname = window.location.hostname
+
+  // 不检测：微信公众号所有页面（包括文章页、编辑器、草稿箱等）
+  if (hostname === 'mp.weixin.qq.com') return null
+
+  // 不检测：编辑器/后台管理类页面（包括今日头条后台等）
+  if (hostname === 'mp.toutiao.com') return null
+  const backendPatterns = ['/cgi-bin/', '/admin/', '/editor/', '/dashboard/']
+  if (backendPatterns.some(p => url.includes(p))) return null
+
+  // 1. 站点特定配置
+  const siteConfig = findSiteConfig(hostname)
+  if (siteConfig) {
+    const contentEl = document.querySelector(siteConfig.contentSelector) as HTMLElement
+    if (contentEl) {
+      const titleEl = (siteConfig.titleSelectors
+        ? findElementBySelectors(siteConfig.titleSelectors)
+        : null) || findArticleTitleGeneric(contentEl)
+      if (titleEl) {
+        return { titleEl, contentEl, platform: siteConfig.platform }
+      }
+    }
+  }
+
+  // 3. meta og:type === 'article'
+  const ogType = document.querySelector('meta[property="og:type"]')?.getAttribute('content')
+  if (ogType === 'article') {
+    const titleEl = findArticleTitleGeneric(document.body)
+    const contentEl = findArticleContentGeneric()
+    if (titleEl && contentEl) {
+      return { titleEl, contentEl, platform: 'generic' }
+    }
+  }
+
+  // 4. 通用选择器检测
+  const contentEl = findArticleContentGeneric()
+  if (contentEl) {
+    const titleEl = findArticleTitleGeneric(contentEl)
+    if (titleEl) {
+      return { titleEl, contentEl, platform: 'generic' }
+    }
+  }
+
+  // 5. 最后手段：检查页面文本长度是否像文章
+  if (document.body.textContent && document.body.textContent.length > 1000) {
+    const titleEl = document.querySelector('h1') as HTMLElement
+    if (titleEl) {
+      return { titleEl, contentEl: document.body, platform: 'generic' }
+    }
+  }
+
+  return null
+}
+
+function findElementBySelectors(selectors: string[]): HTMLElement | null {
+  for (const sel of selectors) {
+    const el = document.querySelector(sel) as HTMLElement
+    if (el?.textContent?.trim()) return el
+  }
+  return null
+}
+
+function findArticleTitleGeneric(fallbackRoot: HTMLElement = document.body): HTMLElement | null {
+  const titleSelectors = [
+    'h1',
+    'article h1',
+    '.article-title',
+    '.post-title',
+    '.entry-title',
+    '[itemprop="headline"]',
+  ]
+  for (const sel of titleSelectors) {
+    const el = fallbackRoot.querySelector(sel) as HTMLElement
+    if (el?.textContent?.trim()) return el
+  }
+  return null
+}
+
+function findArticleContentGeneric(): HTMLElement | null {
+  const contentSelectors = [
+    'article',
+    '.article-content',
+    '.post-content',
+    '.entry-content',
+    '[itemprop="articleBody"]',
+    'main',
+  ]
+  for (const sel of contentSelectors) {
+    const el = document.querySelector(sel) as HTMLElement
+    if (el?.textContent && el.textContent.length > 100) return el
+  }
+  return null
+}
+
+// ========== 文章标题旁行内同步按钮 ==========
+
+let inlineSyncButton: HTMLElement | null = null
+
+/**
+ * 在文章标题旁边注入"同步文章"按钮
+ */
+function injectInlineSyncButton(detection: ArticleDetection) {
+  if (inlineSyncButton) return
+
+  const { titleEl, platform } = detection
+
+  const btn = document.createElement('span')
+  btn.id = 'wechatsync-inline-sync'
+  btn.setAttribute('data-wechatsync-ui', '')
+  btn.title = '同步文章到多平台'
+  btn.style.cssText = `
+    display: inline-flex !important;
+    align-items: center !important;
+    margin-left: 12px !important;
+    padding: 2px 10px !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(128,128,128,0.25) !important;
+    background: transparent !important;
+    cursor: pointer !important;
+    color: rgba(0,0,0,0.35) !important;
+    font-size: 12px !important;
+    font-weight: 400 !important;
+    font-family: inherit !important;
+    vertical-align: middle !important;
+    line-height: 1.5 !important;
+    transition: color 0.2s, border-color 0.2s, background 0.2s !important;
+    user-select: none !important;
+    white-space: nowrap !important;
+    position: relative !important;
+    z-index: 9999 !important;
+    box-shadow: none !important;
+  `
+
+  btn.innerHTML = `
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="margin-right:3px;flex-shrink:0;opacity:0.55;" class="wcs-icon">
+      <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+    </svg>
+    同步
+  `
+
+  btn.addEventListener('mouseenter', () => {
+    btn.style.color = '#07c160'
+    btn.style.borderColor = 'rgba(7,193,96,0.4)'
+    btn.style.background = 'rgba(7,193,96,0.05)'
+    const icon = btn.querySelector('.wcs-icon') as SVGElement | null
+    if (icon) icon.style.opacity = '1'
+  })
+  btn.addEventListener('mouseleave', () => {
+    btn.style.color = 'rgba(0,0,0,0.35)'
+    btn.style.borderColor = 'rgba(128,128,128,0.25)'
+    btn.style.background = 'transparent'
+    const icon = btn.querySelector('.wcs-icon') as SVGElement | null
+    if (icon) icon.style.opacity = '0.55'
+  })
+
+  btn.addEventListener('click', () => {
+    pendingLoading = showLoading()
+    chrome.runtime.sendMessage({ type: 'TRIGGER_OPEN_EDITOR' })
+  })
+
+  if (titleEl.parentNode) {
+    const computed = getComputedStyle(titleEl)
+    if (computed.display === 'inline' || computed.display === 'inline-block') {
+      titleEl.parentNode.insertBefore(btn, titleEl.nextSibling)
+    } else {
+      titleEl.appendChild(btn)
+    }
+  } else {
+    titleEl.appendChild(btn)
+  }
+
+  inlineSyncButton = btn
+}
+
+function removeInlineSyncButton() {
+  if (inlineSyncButton) {
+    inlineSyncButton.remove()
+    inlineSyncButton = null
+  }
+}
+
 // ========== 悬浮按钮 ==========
 
 // 预先显示的 loading（点击按钮时立即显示，避免等待 background 响应）
@@ -927,12 +1201,72 @@ function removeFloatingButton() {
   }
 }
 
-// 初始化：读取设置决定是否注入
+// 初始化：读取设置决定是否注入悬浮按钮
 chrome.storage.local.get('floatingButtonEnabled', (result) => {
   if (result.floatingButtonEnabled) {
     injectFloatingButton()
   }
 })
+
+// 初始化：检测文章并注入行内按钮（默认开启，独立于悬浮按钮）
+// 使用 setTimeout 确保 DOM 完全加载，再用 MutationObserver 兜底
+let articleDetectionDone = false
+let articleDetectionAttempts = 0
+const MAX_DETECTION_ATTEMPTS = 5
+
+function tryInjectInlineButton() {
+  if (articleDetectionDone) return
+  articleDetectionAttempts++
+  try {
+    const detection = detectArticle()
+    if (detection) {
+      articleDetectionDone = true
+      injectInlineSyncButton(detection)
+      logger.debug('Article detected, inline button injected:', detection.platform)
+      return
+    }
+  } catch {
+    // DOM 查询偶尔可能因页面状态异常失败，忽略
+  }
+  // 多次检测失败则放弃，避免 MutationObserver 无限重试
+  if (articleDetectionAttempts >= MAX_DETECTION_ATTEMPTS) {
+    articleDetectionDone = true
+  }
+}
+
+// 首次尝试：DOM 就绪后检测
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(tryInjectInlineButton, 800)
+  })
+} else {
+  setTimeout(tryInjectInlineButton, 800)
+}
+
+// 兜底：监听 DOM 变化，延迟再试（SPA / 异步渲染）
+let domObserver: MutationObserver | null = null
+function startDomObserver() {
+  if (articleDetectionDone) return
+  domObserver = new MutationObserver(() => {
+    tryInjectInlineButton()
+    if (articleDetectionDone && domObserver) {
+      domObserver.disconnect()
+      domObserver = null
+    }
+  })
+  domObserver.observe(document.body || document.documentElement, {
+    childList: true,
+    subtree: true,
+  })
+  // 最多观察 10 秒
+  setTimeout(() => {
+    if (domObserver) {
+      domObserver.disconnect()
+      domObserver = null
+    }
+  }, 10000)
+}
+setTimeout(startDomObserver, 2000)
 
 // 监听设置变化，实时响应
 chrome.storage.onChanged.addListener((changes) => {
@@ -1106,9 +1440,24 @@ function preprocessForMultiplePlatformsLocal(
  * 监听编辑器消息
  */
 window.addEventListener('message', async (event) => {
-  try {
-    const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
+  // 仅处理对象类型或有效 JSON 字符串的消息，忽略页面的其他 postMessage
+  let data: any
+  if (typeof event.data === 'object' && event.data !== null) {
+    data = event.data
+  } else if (typeof event.data === 'string') {
+    try {
+      data = JSON.parse(event.data)
+    } catch {
+      return // 不是有效 JSON，不是我们的消息，静默忽略
+    }
+  } else {
+    return
+  }
 
+  // 只处理我们定义的消息类型
+  if (!data.type) return
+
+  try {
     if (data.type === 'CLOSE_EDITOR') {
       closeEditor()
     } else if (data.type === 'START_SYNC') {
@@ -1116,7 +1465,7 @@ window.addEventListener('message', async (event) => {
       if (!editorIframe) return
       // 转发同步请求到 background
       // 编辑器传来的是 HTML content
-      const rawHtml = data.article.content || ''
+      const rawHtml = data.article?.content || ''
       const platforms: string[] = data.platforms || []
 
       // 从 background 获取各平台的预处理配置
@@ -1147,7 +1496,8 @@ window.addEventListener('message', async (event) => {
       })
     }
   } catch (e) {
-    logger.error('Error handling editor message:', e)
+    // 只对我们自己的消息类型才记录，避免页面其他 postMessage 污染日志
+    logger.warn('Editor message handler error:', e)
   }
 })
 

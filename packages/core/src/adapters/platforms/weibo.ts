@@ -86,7 +86,7 @@ export class WeiboAdapter extends CodeAdapter {
 
     const configMatch = html.match(/config:\s*JSON\.parse\('(.+?)'\)/)
     if (!configMatch) {
-      logger.error('Failed to find config in HTML')
+      logger.debug('Failed to find config in HTML (Weibo may have changed their page structure)')
       return null
     }
 
@@ -380,7 +380,9 @@ export class WeiboAdapter extends CodeAdapter {
       return processedContent
     }
 
-    logger.info(`Found ${matches.length} images to process`)
+    // 统计需要上传的图片数（排除 sinaimg.cn 和 data:）
+    const uploadable = matches.filter(m => m.src && !m.src.startsWith('data:') && !m.src.includes('sinaimg.cn') && !m.src.includes('weibo.com')).length
+    logger.info(`Found ${matches.length} images, ${uploadable} need upload`)
 
     let result = processedContent
     const uploadedMap = new Map<string, { pid: string; url: string }>()
@@ -389,17 +391,20 @@ export class WeiboAdapter extends CodeAdapter {
     for (const { full, src, hasFigure } of matches) {
       if (!src) continue
 
-      if (src.includes('sinaimg.cn') || src.includes('weibo.com')) {
-        logger.debug(`Skipping weibo image: ${src}`)
-        continue
-      }
+      if (src.startsWith('data:')) continue
 
-      if (src.startsWith('data:')) {
+      // sinaimg.cn / weibo.com 图片已在微博 CDN，只需转 HTTPS + 确保格式正确
+      if (src.includes('sinaimg.cn') || src.includes('weibo.com')) {
+        const httpsSrc = src.replace(/^http:/, 'https:')
+        if (httpsSrc !== src) {
+          result = result.replace(src, httpsSrc)
+          logger.debug(`Converted to HTTPS: ${httpsSrc}`)
+        }
         continue
       }
 
       processed++
-      onProgress?.(processed, matches.length)
+      onProgress?.(processed, uploadable)
 
       try {
         let imgInfo = uploadedMap.get(src)

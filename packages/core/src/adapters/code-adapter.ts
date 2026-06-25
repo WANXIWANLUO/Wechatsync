@@ -225,6 +225,49 @@ export abstract class CodeAdapter implements PlatformAdapter {
    *
    * 注意: 这个方法只做 URL 提取和替换，不涉及 DOM 解析
    */
+  // ============ 图片获取辅助 ============
+
+  /**
+   * 防盗链 Referer 映射表：图片域名 → 应带的 Referer
+   * 添加新域名时只需在此追加
+   */
+  private static readonly IMAGE_REFERER_MAP: Record<string, string> = {
+    'mmbiz.qpic.cn': 'https://mp.weixin.qq.com/',
+    'mmbiz.qlogo.cn': 'https://mp.weixin.qq.com/',
+  }
+
+  /**
+   * 根据图片 URL 获取应带的 Referer（防盗链）
+   */
+  private static getImageReferer(url: string): string | undefined {
+    try {
+      const hostname = new URL(url).hostname
+      return CodeAdapter.IMAGE_REFERER_MAP[hostname]
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 下载图片（自动处理防盗链 Referer）
+   * @param src 图片 URL 或 data URI
+   * @returns Blob
+   */
+  protected async fetchImage(src: string): Promise<Blob> {
+    if (src.startsWith('data:')) {
+      return this.dataUriToBlob(src)
+    }
+
+    const referer = CodeAdapter.getImageReferer(src)
+    const headers: Record<string, string> = referer ? { Referer: referer } : {}
+
+    const response = await this.runtime.fetch(src, { headers })
+    if (!response.ok) {
+      throw new Error(`图片下载失败 (${response.status}): ${src.slice(0, 80)}`)
+    }
+    return response.blob()
+  }
+
   protected async processImages(
     content: string,
     uploadFn: (src: string) => Promise<ImageUploadResult>,
@@ -235,11 +278,15 @@ export abstract class CodeAdapter implements PlatformAdapter {
     // 提取所有图片（HTML + Markdown）
     const matches: { full: string; src: string; alt?: string; type: 'html' | 'markdown' }[] = []
 
+    // HTML 实体会破坏 URL 参数签名（如 &amp; → &）
+    const decodeHtmlEntities = (url: string) =>
+      url.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+
     // 1. HTML 格式: <img ... src="url" ...>
     const htmlImgRegex = /<img[^>]+src="([^"]+)"[^>]*>/gi
     let match
     while ((match = htmlImgRegex.exec(content)) !== null) {
-      matches.push({ full: match[0], src: match[1], type: 'html' })
+      matches.push({ full: match[0], src: decodeHtmlEntities(match[1]), type: 'html' })
     }
 
     // 2. Markdown 格式: ![alt](url)

@@ -8,6 +8,31 @@ import baseManifest from './manifest.json'
 
 const manifest = baseManifest
 
+// 修复 crx-client-port：instanceof Error 在扩展上下文中不可靠，
+// 且 content script 的 Error 对象与 crx-client-port 中的 Error 构造函数
+// 可能来自不同的 JavaScript 上下文
+function fixCrxClientPortPlugin() {
+  return {
+    name: 'fix-crx-client-port',
+    transform(code: string, id: string) {
+      if (id.includes('crx-client-port')) {
+        // 1. 修复 instanceof Error 检查（跨上下文不可靠）
+        code = code.replace(
+          /if\s*\(error\s+instanceof\s+Error\s*&&\s*error\.message\.includes\(["']Extension context invalidated\.["']\)\)/g,
+          'if (error?.message?.includes("Extension context invalidated."))'
+        )
+        // 2. 如果已经触发 reload，不要再 throw
+        code = code.replace(
+          /catch\s*\(\s*error\s*\)\s*\{\s*if\s*\(error\?\.message\?\.includes\(["']Extension context invalidated\.["']\)\)\s*\{\s*location\.reload\(\);\s*\}\s*else\s*throw\s+error;\s*\}/g,
+          'catch(error){if(error?.message?.includes("Extension context invalidated.")){location.reload();return}else throw error}'
+        )
+        return code
+      }
+      return null
+    },
+  }
+}
+
 // 复制静态文件并修改 manifest 的插件
 function copyStaticFilesPlugin() {
   return {
@@ -54,15 +79,12 @@ function copyStaticFilesPlugin() {
       if (existsSync(manifestPath)) {
         const manifestContent = JSON.parse(readFileSync(manifestPath, 'utf-8'))
 
-        // 在 content_scripts 开头添加 reader 脚本
-        // 不设置 world，使用默认的 ISOLATED world，与 extractor 共享全局变量
         const readerContentScript = {
           js: ['reader.js', 'Readability.js'],
           matches: ['http://*/*', 'https://*/*'],
           run_at: 'document_start'
         }
 
-        // 添加到 content_scripts 数组开头
         manifestContent.content_scripts = [
           readerContentScript,
           ...manifestContent.content_scripts
@@ -83,6 +105,7 @@ export default defineConfig(({ mode }) => {
       react(),
       yaml(),
       crx({ manifest }),
+      fixCrxClientPortPlugin(),
       copyStaticFilesPlugin(),
     ],
     define: {
