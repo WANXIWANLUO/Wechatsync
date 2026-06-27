@@ -235,9 +235,9 @@ export function EditorApp() {
 
   return (
     <div className="bg-gray-50">
-      {/* Toolbar */}
+      {/* Toolbar — inner width follows article content */}
       <header className="fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50">
-        <div className="px-6 py-3 flex items-center justify-between">
+        <div className="max-w-4xl mx-auto px-12 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <img src={chrome.runtime.getURL('assets/icon-48.png')} alt="Logo" className="w-6 h-6" />
             <span className="font-medium text-gray-700">同步助手 - 点击内容可直接修改</span>

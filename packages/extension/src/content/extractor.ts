@@ -36,30 +36,102 @@ interface ExtractedArticle {
  * 提取文章内容
  */
 /**
- * 强制加载页面上所有懒加载图片
- * 策略：延时滚动页面触发所有图片加载，再滚回原位
+ * 判断 src 是否为占位图（小尺寸、data URI 等）
  */
-async function preloadLazyImages(): Promise<void> {
-  const scrollY = window.scrollY
-  const scrollX = window.scrollX
-  const totalHeight = document.body.scrollHeight
-  const viewportHeight = window.innerHeight
-  const stepDelay = 150 // 每步停留时间(ms)，让懒加载触发
-
-  // 如果页面很短，不需要滚动
-  if (totalHeight <= viewportHeight * 1.5) return
-
-  // 快速滚动到底部再滚回来，触发所有懒加载
-  for (let pos = viewportHeight; pos <= totalHeight; pos += viewportHeight) {
-    window.scrollTo({ left: scrollX, top: pos, behavior: 'instant' as ScrollBehavior })
-    await new Promise(r => setTimeout(r, stepDelay))
-  }
-  // 滚回原位
-  window.scrollTo({ left: scrollX, top: scrollY, behavior: 'instant' as ScrollBehavior })
+function isPlaceholderSrc(src: string): boolean {
+  if (!src) return true
+  // data URI 小于 200 字符的通常是占位图
+  if (src.startsWith('data:') && src.length < 200) return true
+  // 非常短的 URL 通常是 1x1 像素等
+  if (src.length < 20 && !src.startsWith('http')) return true
+  return false
 }
 
-async function extractArticle(): Promise<ExtractedArticle | null> {
+/**
+ * 从图片的所有 data-* 属性中找到真正的图片 URL
+ */
+function findRealSrc(img: HTMLImageElement): string | null {
+  // 常见的懒加载属性名
+  const knownAttrs = ['data-src', 'data-original', 'data-lazy-src', 'data-url',
+    'data-srcset', 'data-img', 'data-image', 'data-image-src', 'data-bg',
+    'data-background', 'data-large', 'data-full', 'data-hires',
+    'data-real-src', 'data-actual-src', 'data-raw-src']
+  
+  for (const attr of knownAttrs) {
+    const val = img.getAttribute(attr)
+    if (val && (val.startsWith('http') || val.startsWith('//') || val.startsWith('/'))) {
+      return val
+    }
+  }
+  
+  // 遍历所有 data-* 属性查找图片 URL
+  for (const name of img.getAttributeNames()) {
+    if (!name.startsWith('data-')) continue
+    const val = img.getAttribute(name)
+    if (val && val.length > 30 && (val.startsWith('http') || val.startsWith('//'))) {
+      return val
+    }
+  }
+  
+  return null
+}
+
+/**
+ * 强制加载页面上所有懒加载图片
+ *
+ * 策略：
+ * 1. 属性修改：loading="lazy"→"eager"（原生懒加载）
+ * 2. 占位图替换：src 为占位图时，从 data-* 属性找真实 URL
+ * 3. 逐屏滚动：限定 <article> 区域，80ms/步触发框架 IntersectionObserver
+ */
+async function preloadLazyImages(): Promise<void> {
+  // 1. 原生懒加载 → eager
+  document.querySelectorAll<HTMLImageElement>('img[loading="lazy"]').forEach(img => {
+    img.loading = 'eager'
+  })
+
+  // 2. 占位图替换：扫描所有图片，占位 src → 真实 URL
+  document.querySelectorAll<HTMLImageElement>('img').forEach(img => {
+    if (isPlaceholderSrc(img.src)) {
+      const realSrc = findRealSrc(img)
+      if (realSrc) {
+        img.src = realSrc
+        img.loading = 'eager'
+      }
+    }
+  })
+
+  // 3. 逐屏滚动文章内容区 — 触发框架 IntersectionObserver
+  const article = document.querySelector('article') as HTMLElement | null
+  const targetEl = article || document.body
+  const scrollY = window.scrollY
+  const scrollX = window.scrollX
+  const rect = targetEl.getBoundingClientRect()
+  const elTop = rect.top + scrollY
+  const elHeight = rect.height
+  const viewportHeight = window.innerHeight
+
+  if (elHeight <= viewportHeight * 1.2) return
+
+  for (let offset = viewportHeight; offset <= elHeight; offset += viewportHeight * 0.7) {
+    window.scrollTo({ left: scrollX, top: elTop + offset, behavior: 'instant' as ScrollBehavior })
+    await new Promise(r => setTimeout(r, 80))
+  }
+  window.scrollTo({ left: scrollX, top: scrollY, behavior: 'instant' as ScrollBehavior })
+  await new Promise(r => setTimeout(r, 300))
+}
+
+// 提取结果缓存：同一页面只提取一次，后续点击直接复用
+let cachedArticle: ExtractedArticle | null = null
+let cachedUrl: string = ''
+
+async function extractArticle(forceRefresh = false): Promise<ExtractedArticle | null> {
   const url = window.location.href
+
+  // 同一页面走缓存（除非强制刷新或 URL 变了）
+  if (!forceRefresh && cachedArticle && cachedUrl === url) {
+    return { ...cachedArticle, markdown: cachedArticle.markdown, html: cachedArticle.html }
+  }
 
   // 提取前先隐藏 WeChatSync 的 UI 元素，避免按钮文字混入文章
   const uiElements = document.querySelectorAll('[data-wechatsync-ui]')
@@ -69,23 +141,35 @@ async function extractArticle(): Promise<ExtractedArticle | null> {
     ;(el as HTMLElement).style.display = 'none'
   })
 
-  // 滚动页面触发所有懒加载图片
+  // 强制触发懒加载图片
   await preloadLazyImages()
 
   try {
+    let result: ExtractedArticle | null = null
+
     if (url.includes('mp.weixin.qq.com')) {
-      return extractWeixinArticle()
+      result = extractWeixinArticle()
+    } else if (window.location.hostname.endsWith('.feishu.cn') || window.location.hostname.endsWith('.larksuite.com')) {
+      result = await extractFeishuArticle()
     }
-    if (window.location.hostname.endsWith('.feishu.cn') || window.location.hostname.endsWith('.larksuite.com')) {
-      const result = await extractFeishuArticle()
-      if (result) return result
+
+    // 飞书没匹配到则继续尝试通用/站点配置
+    if (!result) {
+      const siteConfig = findSiteConfig(window.location.hostname)
+      if (siteConfig) {
+        result = extractWithSiteConfig(siteConfig)
+      }
     }
-    const siteConfig = findSiteConfig(window.location.hostname)
-    if (siteConfig) {
-      const result = extractWithSiteConfig(siteConfig)
-      if (result) return result
+    if (!result) {
+      result = extractGenericArticle()
     }
-    return extractGenericArticle()
+
+    // 缓存结果
+    if (result) {
+      cachedArticle = result
+      cachedUrl = url
+    }
+    return result
   } finally {
     // 恢复 WeChatSync UI 元素显示
     uiElements.forEach((el, i) => {

@@ -1,26 +1,18 @@
 import { defineConfig } from 'tsup'
 
-export default defineConfig([
-  // Main entry (CLI with shebang)
-  {
-    entry: ['src/index.ts'],
-    format: ['esm'],
-    target: 'node18',
-    outDir: 'dist',
-    clean: true,
-    sourcemap: true,
-    dts: true,
-    banner: {
-      js: '#!/usr/bin/env node',
-    },
+export default defineConfig({
+  entry: {
+    index: 'src/index.ts',
+    exports: 'src/exports.ts',
   },
-  // Library exports (no shebang)
-  {
-    entry: ['src/exports.ts'],
-    format: ['esm'],
-    target: 'node18',
-    outDir: 'dist',
-    sourcemap: true,
-    dts: true,
+  format: ['esm'],
+  target: 'node18',
+  outDir: 'dist',
+  clean: true,
+  sourcemap: true,
+  dts: true,
+  // shebang for CLI entry — harmless on library entry
+  banner: {
+    js: '#!/usr/bin/env node',
   },
-])
+})
