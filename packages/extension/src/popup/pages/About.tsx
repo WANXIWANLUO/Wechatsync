@@ -32,7 +32,7 @@ export function AboutPage() {
         {/* Legal notice (GPL-3.0) */}
         <div className="mt-6 w-full max-w-[280px] rounded-lg border p-3 text-xs text-muted-foreground leading-relaxed space-y-1">
           <p className="font-medium text-foreground">版权声明</p>
-          <p>本程序为自由软件：你可依据自由软件基金会发布的 GNU 通用公共许可证（第三版或任意更高版本）自由分发与修改。</p>
+          <p>本项目是基于开源项目 Wechatsync（GPL-3.0）的衍生作品 。原作者fun </p>
           <p>本程序不提供任何担保。详情请参阅 LICENSE 文件。</p>
         </div>
       </div>

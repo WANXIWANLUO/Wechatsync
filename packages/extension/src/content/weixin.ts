@@ -104,8 +104,43 @@ function extractWeixinArticle() {
   }
 }
 
-// 只响应 popup 的 EXTRACT_ARTICLE，其他消息交给 extractor.ts 处理
+// ========== 显示列表匹配 ==========
+
+interface DisplayRule {
+  id: string
+  hostname: string
+  pathPrefix: string
+  url: string
+  title: string
+  createdAt: number
+}
+
+function isPageInDisplayList(): boolean {
+  try {
+    const storageKey = 'syncButtonDisplayList'
+    // 同步读取 storage (已在页面加载时缓存到 onChanged)
+    return (window as any).__wcs_displayMatched === true
+  } catch {
+    return false
+  }
+}
+
+// 响应消息
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type === 'DETECT_ARTICLE') {
+    // 轻量检测 WeChat 文章页
+    const titleEl = document.querySelector('#activity-name')
+    const isArticle = !!(titleEl && document.querySelector('#js_content'))
+    if (isArticle) {
+      const title = titleEl!.textContent?.trim() || document.title
+      const cover = document.querySelector('meta[property="og:image"]')?.getAttribute('content') || undefined
+      const summary = document.querySelector('meta[property="og:description"]')?.getAttribute('content') || undefined
+      sendResponse({ article: { title, cover, summary, content: '' } })
+    } else {
+      sendResponse({ article: null })
+    }
+    return true
+  }
   if (message.type === 'EXTRACT_ARTICLE') {
     const article = extractWeixinArticle()
     sendResponse({ article })
@@ -115,14 +150,46 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false
 })
 
-// 按钮注入
+// 按钮注入（仅在显示列表匹配时）
 function tryInject() {
+  if (!isPageInDisplayList()) return false
   if (document.querySelector('#activity-name') && document.querySelector('#js_content')) {
     injectSyncButton()
     return true
   }
   return false
 }
+
+// 检查显示列表并设置标记
+function checkDisplayList() {
+  try {
+    chrome.storage.local.get('syncButtonDisplayList', (result) => {
+      if (chrome.runtime.lastError) return
+      const rules: DisplayRule[] = result.syncButtonDisplayList || []
+      const url = window.location.href
+      const matched = rules.some(rule => {
+        try {
+          const parsed = new URL(url)
+          if (parsed.hostname !== rule.hostname) return false
+          if (!rule.pathPrefix || rule.pathPrefix === '/') return true
+          return parsed.pathname.startsWith(rule.pathPrefix)
+        } catch { return false }
+      })
+      ;(window as any).__wcs_displayMatched = matched
+      if (matched) tryInject()
+    })
+  } catch { /* extension context invalidated */ }
+}
+checkDisplayList()
+
+// 监听显示列表变化
+chrome.storage.onChanged.addListener((changes) => {
+  try {
+    if (changes.syncButtonDisplayList) {
+      checkDisplayList()
+    }
+  } catch { /* extension context invalidated */ }
+})
 
 // 首次尝试
 if (document.readyState === 'loading') {

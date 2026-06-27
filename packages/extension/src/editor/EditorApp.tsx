@@ -234,7 +234,7 @@ export function EditorApp() {
   const authenticatedCount = platforms.filter(p => p.isAuthenticated).length
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="bg-gray-50">
       {/* Toolbar */}
       <header className="fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50">
         <div className="px-6 py-3 flex items-center justify-between">
@@ -290,25 +290,31 @@ export function EditorApp() {
       )}
 
       {/* Article content area */}
-      <main className="pt-16 pb-16">
-        <article className="w-full max-w-4xl mx-auto bg-white shadow-sm px-12 py-10" style={{ minHeight: 'calc(100vh - 4rem)' }}>
+      <main className="pt-16 pb-8">
+        <article className="w-full max-w-4xl mx-auto bg-white shadow-sm px-12 py-10">
           {article.cover && (
-            <img
-              src={article.cover}
-              alt=""
-              className="w-full max-h-80 object-cover mb-8"
-            />
+            <div className="mb-8">
+              <span className="inline-block text-[10px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded mb-2">封面图</span>
+              <img
+                src={article.cover}
+                alt=""
+                className="w-full rounded-lg"
+                style={{ maxHeight: '50vh', objectFit: 'contain', objectPosition: 'top' }}
+              />
+            </div>
           )}
 
+          <span className="inline-block text-[10px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded mb-2">标题</span>
           <h1
             ref={titleRef}
             contentEditable
             suppressContentEditableWarning
-            className="text-3xl font-bold text-gray-900 mb-8 outline-none border border-transparent hover:border-gray-200 focus:border-blue-300 focus:bg-blue-50 rounded px-2 -mx-2 leading-tight transition-colors"
+            className="text-3xl font-bold text-gray-900 mb-8 outline-none border border-transparent hover:border-gray-200 focus:border-blue-300 focus:bg-blue-50 rounded px-2 -mx-2 leading-tight transition-colors bg-slate-50"
           >
             {article.title}
           </h1>
 
+          <span className="inline-block text-[10px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded mb-2">正文</span>
           <div
             ref={contentRef}
             contentEditable

@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings, Plus, Clock, X, Download, Info } from 'lucide-react'
+import { Settings, Plus, Clock, X, Download, Info, Eye, FileText, Check, Pencil } from 'lucide-react'
 import { useSyncStore } from '../stores/sync'
 import { SettingsDrawer } from '../components/SettingsDrawer'
-import { SyncDialog } from '@/components/sync-dialog'
-import type { Platform as DialogPlatform } from '@/components/sync-dialog'
 import { cn } from '@/lib/utils'
 import { trackPageView, trackFeatureDiscovery } from '../../lib/analytics'
 import { createLogger } from '../../lib/logger'
@@ -12,107 +10,180 @@ import { getCachedUpdateInfo, dismissUpdate, type UpdateCheckResult } from '../.
 
 const logger = createLogger('HomeNew')
 
+// ========== 显示规则相关 ==========
+
+interface DisplayRule {
+  id: string
+  hostname: string
+  pathPrefix: string
+  url: string
+  title: string
+  createdAt: number
+}
+
+const DISPLAY_LIST_KEY = 'syncButtonDisplayList'
+
+/**
+ * 从 URL 中提取特征：主机名 + 路径前缀
+ * 路径前缀取除最后一段之外的所有路径部分
+ */
+function extractUrlFeatures(url: string): { hostname: string; pathPrefix: string } {
+  try {
+    const parsed = new URL(url)
+    const pathParts = parsed.pathname.split('/').filter(Boolean)
+
+    let pathPrefix = ''
+    if (pathParts.length > 1) {
+      pathPrefix = '/' + pathParts.slice(0, -1).join('/') + '/'
+    } else if (pathParts.length === 1) {
+      pathPrefix = '/'
+    }
+
+    return {
+      hostname: parsed.hostname,
+      pathPrefix,
+    }
+  } catch {
+    return { hostname: '', pathPrefix: '' }
+  }
+}
+
+/**
+ * 检查 URL 是否匹配规则
+ */
+function urlMatchesRule(url: string, rule: DisplayRule): boolean {
+  try {
+    const parsed = new URL(url)
+    if (parsed.hostname !== rule.hostname) return false
+    if (!rule.pathPrefix || rule.pathPrefix === '/') return true
+    return parsed.pathname.startsWith(rule.pathPrefix)
+  } catch {
+    return false
+  }
+}
+
 export function HomeNew() {
   const navigate = useNavigate()
   const {
-    status,
     article,
-    platforms,
-    selectedPlatforms,
-    results,
-    error,
-
-    platformProgress,
-    recovered,
-    loadPlatforms,
     loadArticle,
-    recoverSyncState,
-    togglePlatform,
-    selectAll,
-    deselectAll,
-    startSync,
-    retryFailed,
-    reset,
-    checkRateLimit,
   } = useSyncStore()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [rateLimitWarning, setRateLimitWarning] = useState<string | null>(null)
-  const [allPlatforms, setAllPlatforms] = useState<DialogPlatform[]>([])
+  const [allPlatforms, setAllPlatforms] = useState<any[]>([])
 
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
-  const [floatingEnabled, setFloatingEnabled] = useState(false)
-  const [isFirstSync, setIsFirstSync] = useState(false)
+
+  // Display list states
+  const [displayList, setDisplayList] = useState<DisplayRule[]>([])
+  const [currentPageDisplayed, setCurrentPageDisplayed] = useState(false)
+  const [currentTabUrl, setCurrentTabUrl] = useState('')
+  const [currentTabTitle, setCurrentTabTitle] = useState('')
+  const [addingToDisplayList, setAddingToDisplayList] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   // Load data
   useEffect(() => {
     const init = async () => {
-      await recoverSyncState()
-      // Render from cache first, then refresh
+      loadArticle()
+      loadPlatformsForEditor()
+
+      // Get current tab info
+      let tabUrl = ''
+      let tabTitle = ''
       try {
-        const cached = await chrome.storage.local.get('platformListCache')
-        if (cached.platformListCache?.length) {
-          setAllPlatforms(cached.platformListCache.map((p: any) => ({
-            id: p.id, name: p.name, icon: p.icon,
-            isAuthenticated: p.isAuthenticated, username: p.username,
-            homepage: p.homepage,
-          })))
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+        if (tab?.url) {
+          tabUrl = tab.url
+          tabTitle = tab.title || ''
+          setCurrentTabUrl(tabUrl)
+          setCurrentTabTitle(tabTitle)
         }
       } catch {}
-      loadAllPlatforms()
-      loadArticle()
-      chrome.storage.local.get(['floatingButtonEnabled', 'syncHistory'], (r) => {
-        setFloatingEnabled(r.floatingButtonEnabled ?? false)
-        setIsFirstSync(!r.syncHistory || r.syncHistory.length === 0)
-      })
+
+      // Load display list and check match
+      await loadDisplayList(tabUrl)
+
       const cached = await getCachedUpdateInfo()
       if (cached?.hasUpdate && cached.info) {
         setUpdateInfo(cached)
       }
+
+      setLoading(false)
     }
     init()
     trackPageView('home').catch(() => {})
   }, [])
 
-  const loadAllPlatforms = async () => {
+  const loadDisplayList = async (tabUrl?: string) => {
+    try {
+      const result = await chrome.storage.local.get(DISPLAY_LIST_KEY)
+      const rules: DisplayRule[] = result[DISPLAY_LIST_KEY] || []
+      setDisplayList(rules)
+
+      const url = tabUrl || currentTabUrl
+      if (url && rules.some(r => urlMatchesRule(url, r))) {
+        setCurrentPageDisplayed(true)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const loadPlatformsForEditor = async () => {
     try {
       const response = await chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH', payload: { forceRefresh: false } })
-      const mapped: DialogPlatform[] = (response.platforms || []).map((p: any) => ({
+      const mapped = (response?.platforms || []).map((p: any) => ({
         id: p.id, name: p.name, icon: p.icon,
         isAuthenticated: p.isAuthenticated, username: p.username,
         homepage: p.homepage,
       }))
       setAllPlatforms(mapped)
-      await loadPlatforms()
-    } catch (error) {
-      logger.error('Failed to load platforms:', error)
+    } catch {
+      // ignore, editor can still open
     }
   }
 
-  // Open editor
-  const handleEditArticle = async () => {
+  const handleAddToDisplayList = async () => {
+    if (!currentTabUrl || addingToDisplayList) return
+    setAddingToDisplayList(true)
+
+    try {
+      const features = extractUrlFeatures(currentTabUrl)
+      const newRule: DisplayRule = {
+        id: `rule_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        hostname: features.hostname,
+        pathPrefix: features.pathPrefix,
+        url: currentTabUrl,
+        title: currentTabTitle || '',
+        createdAt: Date.now(),
+      }
+
+      const storage = await chrome.storage.local.get(DISPLAY_LIST_KEY)
+      const existing: DisplayRule[] = storage[DISPLAY_LIST_KEY] || []
+      const updated = [...existing, newRule]
+      await chrome.storage.local.set({ [DISPLAY_LIST_KEY]: updated })
+
+      setDisplayList(updated)
+      setCurrentPageDisplayed(true)
+    } catch (e) {
+      logger.error('Failed to add to display list:', e)
+    } finally {
+      setAddingToDisplayList(false)
+    }
+  }
+
+  // Open editor for article preview & sync
+  const handleOpenEditor = async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     if (tab?.id) {
       chrome.tabs.sendMessage(tab.id, {
         type: 'OPEN_EDITOR',
         platforms: allPlatforms,
-        selectedPlatforms,
       })
       window.close()
     }
   }
-
-  // Start sync with rate-limit check
-  const handleStartSync = async () => {
-    const warning = await checkRateLimit()
-    if (warning) {
-      setRateLimitWarning(warning)
-      setTimeout(() => setRateLimitWarning(null), 8000)
-    }
-    startSync()
-  }
-
-  const successCount = results.filter(r => r.success).length
 
   return (
     <div className="flex flex-col h-[500px]">
@@ -136,6 +207,13 @@ export function HomeNew() {
           >
             <Clock className="w-3.5 h-3.5" />
             <span className="text-[10px] text-muted-foreground leading-none">历史</span>
+          </button>
+          <button
+            onClick={() => navigate('/display-list')}
+            className="flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg hover:bg-muted transition-colors"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            <span className="text-[10px] text-muted-foreground leading-none">显示列表</span>
           </button>
           <button
             onClick={() => navigate('/about')}
@@ -197,69 +275,129 @@ export function HomeNew() {
         </div>
       )}
 
-      {/* SyncDialog — the unified sync flow */}
-      <SyncDialog
-        article={article}
-        platforms={allPlatforms}
-        status={status}
-        selectedPlatforms={selectedPlatforms}
-        results={results}
-        platformProgress={platformProgress}
-        error={error}
-        onTogglePlatform={togglePlatform}
-        onSelectAll={selectAll}
-        onDeselectAll={deselectAll}
-        onStartSync={handleStartSync}
-        onRetryFailed={retryFailed}
-        onReset={reset}
-        onCancel={reset}
-        onEditArticle={handleEditArticle}
-        className="flex-1 min-h-0"
-      />
-
-      {/* First sync success hint */}
-      {status === 'completed' && isFirstSync && successCount > 0 && (
-        <div className="px-4 pb-3">
-          <div className="bg-green-50 dark:bg-green-950/20 rounded-lg p-2.5 space-y-1.5">
-            <p className="text-xs font-medium text-green-700 dark:text-green-400">
-              首次同步成功！以后同步更方便：
-            </p>
-            {!floatingEnabled && (
-              <button
-                onClick={() => {
-                  chrome.storage.local.set({ floatingButtonEnabled: true })
-                  setFloatingEnabled(true)
-                }}
-                className="text-xs text-primary hover:underline block"
-              >
-                开启悬浮按钮 — 在任意文章页一键同步
-              </button>
+      {/* 同步按钮显示切换区域 — 仅在已检测到文章时显示 */}
+      {article && currentTabUrl && (
+        <div className="px-4 pt-3 pb-1">
+          <div className={cn(
+            'rounded-lg p-2.5 border',
+            currentPageDisplayed
+              ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-900'
+              : 'bg-muted/40 border-border'
+          )}>
+            {currentPageDisplayed ? (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Eye className="w-4 h-4 text-green-600 dark:text-green-400" />
+                  <div>
+                    <span className="text-xs font-medium text-green-700 dark:text-green-400">
+                      已显示同步按钮
+                    </span>
+                    <span className="text-[10px] text-green-600 dark:text-green-500 ml-1.5">
+                      下次自动显示
+                    </span>
+                  </div>
+                </div>
+                <button
+                  disabled
+                  className="text-[10px] px-2 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 opacity-60 cursor-not-allowed"
+                >
+                  已启用
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Eye className="w-4 h-4 text-muted-foreground" />
+                  <div>
+                    <span className="text-xs font-medium">
+                      显示同步按钮
+                    </span>
+                    <span className="text-[10px] text-muted-foreground ml-1">
+                      智能分析当前链接并自动匹配
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={handleAddToDisplayList}
+                  disabled={addingToDisplayList}
+                  className={cn(
+                    'text-[10px] px-2 py-0.5 rounded font-medium transition-colors',
+                    addingToDisplayList
+                      ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                      : 'bg-primary/10 text-primary hover:bg-primary/20'
+                  )}
+                >
+                  {addingToDisplayList ? '分析中...' : '点击启用'}
+                </button>
+              </div>
             )}
-            <p className="text-xs text-green-600 dark:text-green-500">
-              下次在文章页点击扩展图标即可快速同步
-            </p>
           </div>
         </div>
       )}
+
+      {/* 文章检测 + 操作区 */}
+      <div className="flex-1 p-4 flex flex-col">
+        {loading ? (
+          <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+            加载中...
+          </div>
+        ) : article ? (
+          /* 已检测到文章 */
+          <div className="flex-1 flex flex-col">
+            <div className="rounded-lg p-3 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900">
+              <div className="flex items-center gap-1.5 mb-2">
+                <Check className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
+                <span className="text-xs font-medium text-green-700 dark:text-green-400">
+                  已识别文章
+                </span>
+              </div>
+              <div className="flex gap-3">
+                {article.cover && (
+                  <img
+                    src={article.cover}
+                    alt=""
+                    className="w-16 h-16 rounded object-cover flex-shrink-0"
+                  />
+                )}
+                <div className="flex-1 min-w-0">
+                  <h2 className="font-medium text-sm line-clamp-2">{article.title}</h2>
+                  {article.summary && (
+                    <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
+                      {article.summary}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 前往调整并同步按钮 */}
+            <div className="mt-auto">
+              <button
+                onClick={handleOpenEditor}
+                className="w-full py-2.5 rounded-lg font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
+              >
+                <Pencil className="w-4 h-4" />
+                调整并同步
+              </button>
+              <p className="text-[10px] text-muted-foreground text-center mt-2">
+                点击后进入编辑器预览和调整内容，选择平台后同步
+              </p>
+            </div>
+          </div>
+        ) : (
+          /* 未检测到文章 */
+          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
+            <FileText className="w-10 h-10 mb-3 opacity-40" />
+            <p className="text-sm">当前页面未检测到文章</p>
+            <p className="text-xs mt-1 opacity-60">
+              请在文章页面打开此插件
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* Settings drawer */}
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-
-      {/* Rate limit warning (non-blocking toast) */}
-      {rateLimitWarning && (
-        <div className="fixed top-2 left-2 right-2 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
-          <div className="bg-yellow-50 dark:bg-yellow-950/50 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 shadow-lg flex items-start gap-2">
-            <span className="text-lg flex-shrink-0">⚠️</span>
-            <p className="text-sm text-yellow-800 dark:text-yellow-200 flex-1">{rateLimitWarning}</p>
-            <button
-              onClick={() => setRateLimitWarning(null)}
-              className="text-yellow-600 dark:text-yellow-400 hover:text-yellow-800 dark:hover:text-yellow-200 flex-shrink-0"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

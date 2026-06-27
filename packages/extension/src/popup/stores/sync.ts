@@ -289,40 +289,27 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   },
 
   loadArticle: async () => {
-    // 如果已有恢复的文章（同步中/完成状态），不覆盖
-    const { article: existingArticle, status } = get()
-    if (existingArticle && (status === 'syncing' || status === 'completed')) {
-      logger.debug('loadArticle - skipped, using recovered article')
-      return
-    }
-
     try {
-      // 首先检查是否有从页面按钮点击传来的待同步文章
-      const storage = await chrome.storage.local.get('pendingArticle')
-      if (storage.pendingArticle) {
-        logger.debug('loadArticle - found pending article:', storage.pendingArticle.title)
-        set({ article: storage.pendingArticle })
-        // 追踪内容特征
-        trackArticleProfile(storage.pendingArticle, 'popup')
-        // 清除已读取的文章
-        await chrome.storage.local.remove('pendingArticle')
-        return
-      }
+      // 清除旧的 pendingArticle，避免缓存
+      await chrome.storage.local.remove('pendingArticle').catch(() => {})
 
-      // 如果没有待同步文章，尝试从当前标签页提取
+      // 轻量检测当前页面是否为文章页（不滚动、不提取完整内容）
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
       logger.debug('loadArticle - current tab:', tab?.url)
       if (!tab?.id) return
 
-      const response = await chrome.tabs.sendMessage(tab.id, { type: 'EXTRACT_ARTICLE' })
+      const response = await chrome.tabs.sendMessage(tab.id, { type: 'DETECT_ARTICLE' })
       logger.debug('loadArticle - response:', response)
       if (response?.article) {
         set({ article: response.article })
         // 追踪内容特征
         trackArticleProfile(response.article, 'popup')
+      } else {
+        set({ article: null })
       }
     } catch (error) {
       logger.error('Failed to extract article:', error)
+      set({ article: null })
     }
   },
 

@@ -712,6 +712,12 @@ interface SiteExtractConfig {
 
 const SITE_CONFIGS: SiteExtractConfig[] = [
   {
+    domains: ['toutiao.com'],
+    platform: 'toutiao',
+    contentSelector: 'article',
+    titleSelectors: ['h1'],
+  },
+  {
     domains: ['github.com'],
     platform: 'github',
     contentSelector: '.markdown-body',
@@ -1025,7 +1031,8 @@ function detectArticle(): ArticleDetection | null {
   // 4. 通用选择器检测
   const contentEl = findArticleContentGeneric()
   if (contentEl) {
-    const titleEl = findArticleTitleGeneric(contentEl)
+    // 标题可能在 article 外面，搜整个页面，而不仅限 article 内部
+    const titleEl = findArticleTitleGeneric(document.body)
     if (titleEl) {
       return { titleEl, contentEl, platform: 'generic' }
     }
@@ -1052,8 +1059,6 @@ function findElementBySelectors(selectors: string[]): HTMLElement | null {
 
 function findArticleTitleGeneric(fallbackRoot: HTMLElement = document.body): HTMLElement | null {
   const titleSelectors = [
-    'h1',
-    'article h1',
     '.article-title',
     '.post-title',
     '.entry-title',
@@ -1063,7 +1068,57 @@ function findArticleTitleGeneric(fallbackRoot: HTMLElement = document.body): HTM
     const el = fallbackRoot.querySelector(sel) as HTMLElement
     if (el?.textContent?.trim()) return el
   }
-  return null
+
+  // 获取页面标题（去掉尾部 " - 站点名" 之类）
+  const pageTitleRaw = (document.querySelector('meta[property="og:title"]')?.getAttribute('content') || document.title || '').trim()
+  const pageTitle = pageTitleRaw.toLowerCase()
+  // 用于匹配的核心部分（去掉 " - xxx" 后缀）
+  const pageTitleCore = pageTitle.replace(/\s*[-|_—–]\s*\S+$/, '').trim()
+  console.log('[WechatSync] findArticleTitle - pageTitle:', pageTitleRaw.substring(0, 80), 'core:', pageTitleCore.substring(0, 80))
+
+  // 在所有标题元素中找最匹配页面标题的
+  const allHeadings = fallbackRoot.querySelectorAll('h1, h2, [class*="title"], [class*="Title"], [class*="headline"], [class*="subject"]')
+  let bestEl: HTMLElement | null = null
+  let bestScore = -1
+
+  for (const el of allHeadings) {
+    const text = el.textContent?.trim() || ''
+    if (!text || text.length < 5 || text.length > 300) continue // 太短或太长的跳过
+    const lowText = text.toLowerCase()
+
+    let score = parseFloat(getComputedStyle(el).fontSize) || 14
+
+    if (pageTitleCore && lowText === pageTitleCore) {
+      score += 100000
+    } else if (pageTitleCore && pageTitleCore.includes(lowText) && lowText.length > 5) {
+      score += 50000
+    } else if (pageTitleCore && lowText.includes(pageTitleCore)) {
+      score += 30000
+    } else if (pageTitle && pageTitle.includes(lowText) && lowText.length > 5) {
+      score += 20000
+    }
+
+    console.log('[WechatSync] findArticleTitle - candidate:', el.tagName, text.substring(0, 50), 'fontSize:', parseFloat(getComputedStyle(el).fontSize), 'score:', score)
+
+    if (score > bestScore) {
+      bestScore = score
+      bestEl = el as HTMLElement
+    }
+  }
+
+  // 没找到匹配的标题元素，回退到 h1
+  if (!bestEl) {
+    const allH1 = fallbackRoot.querySelectorAll('h1')
+    for (const el of allH1) {
+      if (el.textContent?.trim()) {
+        bestEl = el as HTMLElement
+        break
+      }
+    }
+  }
+
+  console.log('[WechatSync] findArticleTitle - selected:', bestEl?.tagName, bestEl?.textContent?.trim()?.substring(0, 50))
+  return bestEl
 }
 
 function findArticleContentGeneric(): HTMLElement | null {
@@ -1099,30 +1154,27 @@ function injectInlineSyncButton(detection: ArticleDetection) {
   btn.setAttribute('data-wechatsync-ui', '')
   btn.title = '同步文章到多平台'
   btn.style.cssText = `
-    display: inline-flex !important;
-    align-items: center !important;
-    margin-left: 12px !important;
-    padding: 2px 10px !important;
-    border-radius: 12px !important;
-    border: 1px solid rgba(128,128,128,0.25) !important;
+    display: inline !important;
+    vertical-align: middle !important;
+    margin-left: 8px !important;
+    padding: 0 8px !important;
+    border-radius: 10px !important;
+    border: 1px solid rgba(128,128,128,0.35) !important;
     background: transparent !important;
     cursor: pointer !important;
-    color: rgba(0,0,0,0.35) !important;
+    color: rgba(0,0,0,0.55) !important;
     font-size: 12px !important;
     font-weight: 400 !important;
     font-family: inherit !important;
-    vertical-align: middle !important;
-    line-height: 1.5 !important;
+    line-height: inherit !important;
     transition: color 0.2s, border-color 0.2s, background 0.2s !important;
     user-select: none !important;
     white-space: nowrap !important;
-    position: relative !important;
-    z-index: 9999 !important;
     box-shadow: none !important;
   `
 
   btn.innerHTML = `
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="margin-right:3px;flex-shrink:0;opacity:0.55;" class="wcs-icon">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-right:3px;flex-shrink:0;opacity:0.7;" class="wcs-icon">
       <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
     </svg>
     同步
@@ -1130,17 +1182,17 @@ function injectInlineSyncButton(detection: ArticleDetection) {
 
   btn.addEventListener('mouseenter', () => {
     btn.style.color = '#07c160'
-    btn.style.borderColor = 'rgba(7,193,96,0.4)'
-    btn.style.background = 'rgba(7,193,96,0.05)'
+    btn.style.borderColor = 'rgba(7,193,96,0.6)'
+    btn.style.background = 'rgba(7,193,96,0.06)'
     const icon = btn.querySelector('.wcs-icon') as SVGElement | null
     if (icon) icon.style.opacity = '1'
   })
   btn.addEventListener('mouseleave', () => {
-    btn.style.color = 'rgba(0,0,0,0.35)'
-    btn.style.borderColor = 'rgba(128,128,128,0.25)'
+    btn.style.color = 'rgba(0,0,0,0.55)'
+    btn.style.borderColor = 'rgba(128,128,128,0.35)'
     btn.style.background = 'transparent'
     const icon = btn.querySelector('.wcs-icon') as SVGElement | null
-    if (icon) icon.style.opacity = '0.55'
+    if (icon) icon.style.opacity = '0.7'
   })
 
   btn.addEventListener('click', () => {
@@ -1148,16 +1200,10 @@ function injectInlineSyncButton(detection: ArticleDetection) {
     chrome.runtime.sendMessage({ type: 'TRIGGER_OPEN_EDITOR' })
   })
 
-  if (titleEl.parentNode) {
-    const computed = getComputedStyle(titleEl)
-    if (computed.display === 'inline' || computed.display === 'inline-block') {
-      titleEl.parentNode.insertBefore(btn, titleEl.nextSibling)
-    } else {
-      titleEl.appendChild(btn)
-    }
-  } else {
-    titleEl.appendChild(btn)
-  }
+  // 直接追加到标题末尾，作为自然 inline 元素跟随文本流
+  titleEl.appendChild(btn)
+
+  console.log('[WechatSync] Button appended inside', titleEl.tagName, 'visible:', btn.offsetParent !== null)
 
   inlineSyncButton = btn
 }
@@ -1201,82 +1247,153 @@ function removeFloatingButton() {
   }
 }
 
-// 初始化：读取设置决定是否注入悬浮按钮
-chrome.storage.local.get('floatingButtonEnabled', (result) => {
-  if (result.floatingButtonEnabled) {
-    injectFloatingButton()
-  }
-})
+// ========== 显示列表 (Display List) 匹配逻辑 ==========
 
-// 初始化：检测文章并注入行内按钮（默认开启，独立于悬浮按钮）
-// 使用 setTimeout 确保 DOM 完全加载，再用 MutationObserver 兜底
-let articleDetectionDone = false
-let articleDetectionAttempts = 0
-const MAX_DETECTION_ATTEMPTS = 5
+interface DisplayRule {
+  id: string
+  hostname: string
+  pathPrefix: string     // 路径前缀，如 "/posts/" 或 "/"
+  url: string            // 创建时的原始 URL
+  title: string          // 页面标题
+  createdAt: number
+}
 
-function tryInjectInlineButton() {
-  if (articleDetectionDone) return
-  articleDetectionAttempts++
+/**
+ * 检查当前页面 URL 是否匹配指定的显示规则
+ */
+function matchesDisplayRule(url: string, rule: DisplayRule): boolean {
   try {
-    const detection = detectArticle()
-    if (detection) {
-      articleDetectionDone = true
-      injectInlineSyncButton(detection)
-      logger.debug('Article detected, inline button injected:', detection.platform)
-      return
+    const parsed = new URL(url)
+    if (parsed.hostname !== rule.hostname) {
+      console.log('[WechatSync] matchesDisplayRule: hostname mismatch', parsed.hostname, '!==', rule.hostname)
+      return false
     }
-  } catch {
-    // DOM 查询偶尔可能因页面状态异常失败，忽略
-  }
-  // 多次检测失败则放弃，避免 MutationObserver 无限重试
-  if (articleDetectionAttempts >= MAX_DETECTION_ATTEMPTS) {
-    articleDetectionDone = true
+    if (!rule.pathPrefix || rule.pathPrefix === '/') return true
+    const result = parsed.pathname.startsWith(rule.pathPrefix)
+    if (!result) {
+      console.log('[WechatSync] matchesDisplayRule: pathname mismatch', parsed.pathname, 'does not start with', rule.pathPrefix)
+    }
+    return result
+  } catch (e) {
+    console.log('[WechatSync] matchesDisplayRule: URL parse error', e)
+    return false
   }
 }
 
-// 首次尝试：DOM 就绪后检测
+/**
+ * 检查当前页面是否在显示列表中
+ */
+function isPageInDisplayList(rules: DisplayRule[]): boolean {
+  if (!rules || rules.length === 0) return false
+  const url = window.location.href
+  for (const rule of rules) {
+    const matched = matchesDisplayRule(url, rule)
+    console.log('[WechatSync] isPageInDisplayList: url hostname=', new URL(url).hostname, 'pathname=', new URL(url).pathname, 'rule hostname=', rule.hostname, 'pathPrefix=', rule.pathPrefix, '→ matched=', matched)
+    if (matched) return true
+  }
+  return false
+}
+
+// 初始化：读取设置决定是否注入悬浮按钮
+try {
+  chrome.storage.local.get('floatingButtonEnabled', (result) => {
+    if (chrome.runtime.lastError) return
+    if (result.floatingButtonEnabled) {
+      injectFloatingButton()
+    }
+  })
+} catch { /* extension context invalidated */ }
+
+// 初始化：根据显示列表决定是否注入行内按钮
+// 使用定时轮询，简单可靠，避免 async storage + MutationObserver 的竞态
+let displayListChecked = false
+let displayListPollCount = 0
+const MAX_DISPLAY_POLL = 8
+
+function tryInjectFromDisplayList() {
+  if (displayListChecked) return
+  displayListPollCount++
+
+  console.log('[WechatSync] tryInjectFromDisplayList attempt', displayListPollCount, 'url:', window.location.href)
+
+  try {
+    chrome.storage.local.get('syncButtonDisplayList', (result) => {
+      if (chrome.runtime.lastError) {
+        console.log('[WechatSync] storage get error:', chrome.runtime.lastError)
+        return
+      }
+      if (displayListChecked) return
+      const rules: DisplayRule[] = result.syncButtonDisplayList || []
+      console.log('[WechatSync] got rules:', rules.length, 'rules:', JSON.stringify(rules.map(r => ({ hostname: r.hostname, pathPrefix: r.pathPrefix }))))
+      if (rules.length > 0 && isPageInDisplayList(rules)) {
+        displayListChecked = true
+        console.log('[WechatSync] page MATCHED display list')
+        try {
+          const detection = detectArticle()
+          console.log('[WechatSync] detectArticle result:', detection ? 'found article, platform=' + detection.platform : 'null')
+          if (detection) {
+            injectInlineSyncButton(detection)
+            console.log('[WechatSync] inline button injected!')
+          }
+        } catch (e) { console.log('[WechatSync] DOM query error:', e) }
+      } else {
+        console.log('[WechatSync] page NOT in display list (rules:', rules.length, 'displayListPollCount:', displayListPollCount, ')')
+        if (displayListPollCount >= MAX_DISPLAY_POLL) {
+          displayListChecked = true
+          console.log('[WechatSync] display list check exhausted after', MAX_DISPLAY_POLL, 'polls')
+        }
+      }
+    })
+  } catch (e) {
+    console.log('[WechatSync] Extension context invalidated:', e)
+    displayListChecked = true
+  }
+}
+
+// 首次检测：DOM 就绪后开始轮询
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    setTimeout(tryInjectInlineButton, 800)
+    setTimeout(tryInjectFromDisplayList, 800)
   })
 } else {
-  setTimeout(tryInjectInlineButton, 800)
+  setTimeout(tryInjectFromDisplayList, 800)
 }
 
-// 兜底：监听 DOM 变化，延迟再试（SPA / 异步渲染）
-let domObserver: MutationObserver | null = null
-function startDomObserver() {
-  if (articleDetectionDone) return
-  domObserver = new MutationObserver(() => {
-    tryInjectInlineButton()
-    if (articleDetectionDone && domObserver) {
-      domObserver.disconnect()
-      domObserver = null
-    }
-  })
-  domObserver.observe(document.body || document.documentElement, {
-    childList: true,
-    subtree: true,
-  })
-  // 最多观察 10 秒
-  setTimeout(() => {
-    if (domObserver) {
-      domObserver.disconnect()
-      domObserver = null
-    }
-  }, 10000)
-}
-setTimeout(startDomObserver, 2000)
+// 每隔 1.5s 重试，最多 MAX_DISPLAY_POLL 次
+const displayPollTimer = setInterval(() => {
+  tryInjectFromDisplayList()
+  if (displayListChecked) clearInterval(displayPollTimer)
+}, 1500)
+
+// 15 秒后强制停止
+setTimeout(() => {
+  clearInterval(displayPollTimer)
+  if (!displayListChecked) displayListChecked = true
+}, 15000)
 
 // 监听设置变化，实时响应
 chrome.storage.onChanged.addListener((changes) => {
-  if (changes.floatingButtonEnabled) {
-    if (changes.floatingButtonEnabled.newValue) {
-      injectFloatingButton()
-    } else {
-      removeFloatingButton()
+  try {
+    if (changes.floatingButtonEnabled) {
+      if (changes.floatingButtonEnabled.newValue) {
+        injectFloatingButton()
+      } else {
+        removeFloatingButton()
+      }
     }
-  }
+    if (changes.syncButtonDisplayList) {
+      const newRules: DisplayRule[] = changes.syncButtonDisplayList.newValue || []
+      if (isPageInDisplayList(newRules)) {
+        displayListChecked = true
+        const detection = detectArticle()
+        if (detection) {
+          injectInlineSyncButton(detection)
+        }
+      } else {
+        removeInlineSyncButton()
+      }
+    }
+  } catch { /* extension context invalidated */ }
 })
 
 // ========== Loading 提示 ==========
@@ -1505,7 +1622,45 @@ window.addEventListener('message', async (event) => {
  * 监听 background 消息，转发同步进度到编辑器
  */
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === 'EXTRACT_ARTICLE') {
+  if (message.type === 'DETECT_ARTICLE') {
+    // 轻量检测：仅判断是否为文章页，不提取完整内容、不滚动页面
+    try {
+      const detection = detectArticle()
+      if (detection) {
+        const title = detection.titleEl?.textContent?.trim() || document.title
+        const cover = document.querySelector('meta[property="og:image"]')?.getAttribute('content') || undefined
+        const summary = document.querySelector('meta[property="og:description"]')?.getAttribute('content') || undefined
+
+        // 顺便检查显示列表：如果页面匹配但按钮尚未注入，补注入
+        if (!inlineSyncButton) {
+          try {
+            chrome.storage.local.get('syncButtonDisplayList', (result) => {
+              if (chrome.runtime.lastError) return
+              const rules: DisplayRule[] = result.syncButtonDisplayList || []
+              if (rules.length > 0 && isPageInDisplayList(rules)) {
+                displayListChecked = true
+                injectInlineSyncButton(detection)
+              }
+            })
+          } catch { /* extension context invalidated */ }
+        }
+
+        sendResponse({
+          article: {
+            title,
+            cover,
+            summary,
+            content: '', // popup 不需要完整内容
+          }
+        })
+      } else {
+        sendResponse({ article: null })
+      }
+    } catch {
+      sendResponse({ article: null })
+    }
+    return true
+  } else if (message.type === 'EXTRACT_ARTICLE') {
     // 微信页面有专用 content script 处理提取，避免竞争
     const url = window.location.href
     if (url.includes('mp.weixin.qq.com/cgi-bin/appmsg') || url.includes('mp.weixin.qq.com/s')) {
