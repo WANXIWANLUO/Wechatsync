@@ -13,7 +13,7 @@ import { CodeAdapter } from '../code-adapter'
 import { htmlToMarkdown } from '../../lib/turndown'
 import { createLogger } from '../../lib/logger'
 import { parseMarkdownImages } from '../../lib/markdown-images'
-import type JSZip from 'jszip'
+import JSZip from 'jszip'
 
 const logger = createLogger('ZipDownload')
 
@@ -41,8 +41,7 @@ export class ZipDownloadAdapter extends CodeAdapter {
    */
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
     try {
-      const { default: JSZipClass } = await import('jszip')
-      const zip = new JSZipClass()
+      const zip = new JSZip()
       const imgFolder = zip.folder('images')!
 
       // 获取 Markdown 内容

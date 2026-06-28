@@ -102,24 +102,22 @@ export class DoubanAdapter extends CodeAdapter {
     return this.withHeaderRules(this.HEADER_RULES, async () => {
       logger.info('Starting publish...')
 
-      // 1. 确保已登录
       if (!this.formData) {
         const auth = await this.checkAuth()
-        if (!auth.isAuthenticated) {
-          throw new Error('请先登录豆瓣')
-        }
+        if (!auth.isAuthenticated) throw new Error('请先登录豆瓣')
       }
 
-      // Use pre-processed markdown content directly
       let content = article.markdown || ''
 
-      // Process images - collect full image data
+      // 新版：通过 URL 上传图片（无需下载 blob）
       const imageDataMap = new Map<string, DoubanImageData>()
+      const uploadedIds: string[] = []
+
       content = await this.processImages(
         content,
         async (src) => {
-          const result = await this.uploadImageWithFullData(src)
-          // 保存完整图片数据，用 newUrl 作为 key
+          const result = await this.uploadImageByUrl(src)
+          uploadedIds.push(result.imageData.id)
           imageDataMap.set(result.url, result.imageData)
           return result
         },
@@ -129,43 +127,46 @@ export class DoubanAdapter extends CodeAdapter {
         }
       )
 
-      // Markdown to Draft.js format (pass in image data)
+      // Markdown → Draft.js
       const draftContent = markdownToDraft(content, imageDataMap)
+      const draftBlocks = typeof draftContent === 'string' ? JSON.parse(draftContent) : draftContent
 
-      // 6. 保存草稿
-      const response = await this.runtime.fetch(
-        'https://www.douban.com/j/note/autosave',
+      // 构建 draft_props
+      const draftProps = JSON.stringify({
+        title: article.title,
+        content: draftBlocks,
+        image_ids: uploadedIds,
+        image_layout: 'vertical',
+        subtype: 'note',
+      })
+
+      // 新版：通过 mobile API 创建草稿，body 只接受 draft_props
+      const createBody = JSON.stringify({ draft_props: draftProps })
+
+      const createRes = await this.runtime.fetch(
+        'https://m.douban.com/rexxar/api/v2/dwarf/drafts',
         {
           method: 'POST',
           credentials: 'include',
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Type': 'application/json',
+            'Referer': 'https://www.douban.com/',
           },
-          body: new URLSearchParams({
-            is_rich: '1',
-            note_id: this.formData!.note_id,
-            note_title: article.title,
-            note_text: draftContent,
-            introduction: '',
-            note_privacy: 'P',
-            cannot_reply: '',
-            author_tags: '',
-            accept_donation: '',
-            donation_notice: '',
-            is_original: '',
-            ck: this.formData!.ck,
-          }),
+          body: createBody,
         }
       )
 
-      const res = await response.json() as { url?: string; r?: number }
-      logger.debug('Save response:', res)
+      const createData = await createRes.json() as { id: number; title?: string }
+      logger.debug('Draft created:', createData)
 
-      // 豆瓣草稿只能在 /note/create 页面查看
-      const draftUrl = 'https://www.douban.com/note/create'
+      if (!createData.id) {
+        throw new Error(`创建草稿失败: ${JSON.stringify(createData)}`)
+      }
+
+      const draftUrl = `https://www.douban.com/note/create?id=${createData.id}`
 
       return this.createResult(true, {
-        postId: this.formData!.note_id,
+        postId: String(createData.id),
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
@@ -175,37 +176,24 @@ export class DoubanAdapter extends CodeAdapter {
   }
 
   /**
-   * 上传图片并返回完整数据
+   * 新版：通过 URL 上传图片到豆瓣
    */
-  private async uploadImageWithFullData(src: string): Promise<ImageUploadResult & { imageData: DoubanImageData }> {
-    if (!this.formData || !this.postParams) {
-      throw new Error('未获取上传凭证')
-    }
-
-    // 1. 下载图片
-    const imageResponse = await this.runtime.fetch(src)
-    if (!imageResponse.ok) {
-      throw new Error('图片下载失败: ' + src)
-    }
-    const imageBlob = await imageResponse.blob()
-
-    // 2. 上传到豆瓣
-    const formData = new FormData()
-    formData.append('note_id', this.formData.note_id)
-    formData.append('image_file', imageBlob, 'image.jpg')
-    formData.append('ck', this.formData.ck)
-    formData.append('upload_auth_token', this.postParams.siteCookie.value)
-
-    const uploadResponse = await this.runtime.fetch(
-      'https://www.douban.com/j/note/add_photo',
+  private async uploadImageByUrl(src: string): Promise<ImageUploadResult & { imageData: DoubanImageData }> {
+    const uploadRes = await this.runtime.fetch(
+      'https://www.douban.com/j/group/topic/fetch_photo',
       {
         method: 'POST',
         credentials: 'include',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+          'Referer': 'https://www.douban.com/',
+        },
+        body: JSON.stringify({ photo_url: src }),
       }
     )
 
-    const res = await uploadResponse.json() as {
+    const data = await uploadRes.json() as {
+      r: number
       photo?: {
         id: string
         url: string
@@ -217,26 +205,26 @@ export class DoubanAdapter extends CodeAdapter {
       }
     }
 
-    logger.debug('Image upload response:', res)
-
-    if (!res.photo?.url) {
-      throw new Error('图片上传失败')
+    if (data.r !== 0 || !data.photo?.url) {
+      throw new Error(`图片上传失败${data.r ? ` (r=${data.r})` : ''}`)
     }
 
-    const photo = res.photo
-
-    // 返回带完整图片数据
     return {
-      url: photo.url,
+      url: data.photo.url,
       imageData: {
-        id: photo.id,
-        url: photo.url,
-        thumb: photo.thumb,
-        width: photo.width,
-        height: photo.height,
-        file_name: photo.file_name,
-        file_size: photo.file_size,
-      }
+        id: data.photo.id,
+        url: data.photo.url,
+        thumb: data.photo.thumb,
+        width: data.photo.width,
+        height: data.photo.height,
+        file_name: data.photo.file_name,
+        file_size: data.photo.file_size,
+      },
     }
+  }
+
+  // 保留旧接口兼容
+  private async uploadImageWithFullData(src: string): Promise<ImageUploadResult & { imageData: DoubanImageData }> {
+    return this.uploadImageByUrl(src)
   }
 }

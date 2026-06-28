@@ -27,7 +27,7 @@ export function AccountListPage() {
         payload: { forceRefresh: true },
       })
       if (response?.platforms?.length) {
-        setPlatforms(response.platforms)
+        setPlatforms(response.platforms.filter((p: PlatformInfo) => p.id !== 'zip-download'))
       }
     } catch { /* ignore */ }
     setRefreshing(false)
@@ -37,7 +37,7 @@ export function AccountListPage() {
   useEffect(() => {
     chrome.storage.local.get('platformListCache').then(cached => {
       if (cached.platformListCache?.length) {
-        setPlatforms(cached.platformListCache)
+        setPlatforms(cached.platformListCache.filter((p: PlatformInfo) => p.id !== 'zip-download'))
         setFirstLoad(false)
       }
     }).catch(() => {})
