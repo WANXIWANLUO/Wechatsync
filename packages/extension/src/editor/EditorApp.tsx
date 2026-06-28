@@ -390,6 +390,7 @@ export function EditorApp() {
               onReset={handleReset}
               onCancel={handleReset}
               className="max-h-[460px]"
+              hideArticleCard
             />
           </div>
         </div>

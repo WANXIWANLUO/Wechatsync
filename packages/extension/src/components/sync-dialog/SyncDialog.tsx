@@ -27,6 +27,7 @@ export function SyncDialog({
   onEditArticle,
   onClose,
   className,
+  hideArticleCard,
 }: SyncDialogProps) {
   const selectedSet = new Set(selectedPlatforms)
   const authenticatedPlatforms = platforms.filter(p => p.isAuthenticated)
@@ -48,12 +49,14 @@ export function SyncDialog({
     <div className={cn('flex flex-col', className)}>
       {/* Scrollable content — single continuous layout */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {/* Article card — compact during sync/complete */}
-        <ArticleCard
-          article={article}
-          compact={isSyncing || isCompleted}
-          onEdit={isIdle ? onEditArticle : undefined}
-        />
+        {/* Article card — compact during sync/complete, hidden when editor already shows article */}
+        {!hideArticleCard && (
+          <ArticleCard
+            article={article}
+            compact={isSyncing || isCompleted}
+            onEdit={isIdle ? onEditArticle : undefined}
+          />
+        )}
 
         {/* Unified platform list — transitions in-place */}
         {article && (

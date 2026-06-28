@@ -201,7 +201,7 @@ function PlatformRow({
       />
 
       {/* Platform name */}
-      <span className="text-sm flex-1 truncate">{platform.name}</span>
+      <span className="text-sm truncate min-w-0">{platform.name}</span>
 
       {/* Right side info */}
       <RowInfo
@@ -365,7 +365,7 @@ function RowInfo({
     )
   }
   return (
-    <span className="text-xs text-muted-foreground truncate max-w-[80px] flex-shrink-0">
+    <span className="text-xs text-muted-foreground truncate flex-1 min-w-0 text-right">
       {platform.username || '已登录'}
     </span>
   )

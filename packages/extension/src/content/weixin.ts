@@ -61,8 +61,15 @@ function injectSyncButton() {
     if (icon) icon.style.opacity = '0.55'
   })
 
+  let clicked = false
   btn.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'TRIGGER_OPEN_EDITOR' }).catch(() => {})
+    if (clicked) return // 防止重复点击
+    clicked = true
+    btn.style.pointerEvents = 'none'
+    chrome.runtime.sendMessage({ type: 'TRIGGER_OPEN_EDITOR' }).catch(() => {
+      clicked = false
+      btn.style.pointerEvents = ''
+    })
   })
 
   titleEl.appendChild(btn)
@@ -70,10 +77,21 @@ function injectSyncButton() {
 
 // 提取文章（only used by popup's EXTRACT_ARTICLE）
 function extractWeixinArticle() {
+  // 提取前移除同步按钮（避免读取到按钮文字"同步"）
+  const syncBtn = document.querySelector('#wechatsync-inline-weixin') as HTMLElement | null
+  const syncBtnParent = syncBtn?.parentNode ?? null
+  const syncBtnNext = syncBtn?.nextSibling ?? null
+  if (syncBtn && syncBtnParent) syncBtnParent.removeChild(syncBtn)
+
   const title = document.querySelector('#activity-name')?.textContent?.trim()
   const contentEl = document.querySelector('#js_content')
   const cover = document.querySelector('meta[property="og:image"]')?.getAttribute('content')
   const summary = document.querySelector('meta[property="og:description"]')?.getAttribute('content')
+
+  // 恢复按钮
+  if (syncBtn && syncBtnParent) {
+    try { syncBtnParent.insertBefore(syncBtn, syncBtnNext) } catch { /* ignore */ }
+  }
 
   if (!title || !contentEl) return null
 

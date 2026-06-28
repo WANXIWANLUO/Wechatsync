@@ -133,12 +133,16 @@ async function extractArticle(forceRefresh = false): Promise<ExtractedArticle | 
     return { ...cachedArticle, markdown: cachedArticle.markdown, html: cachedArticle.html }
   }
 
-  // 提取前先隐藏 WeChatSync 的 UI 元素，避免按钮文字混入文章
+  // 提取前先移除 WeChatSync 的 UI 元素，避免按钮文字混入文章
   const uiElements = document.querySelectorAll('[data-wechatsync-ui]')
-  const uiDisplay: string[] = []
+  const uiRestore: { el: Element; parent: Node; next: Node | null }[] = []
   uiElements.forEach(el => {
-    uiDisplay.push((el as HTMLElement).style.display)
-    ;(el as HTMLElement).style.display = 'none'
+    const parent = el.parentNode
+    const next = el.nextSibling
+    if (parent) {
+      uiRestore.push({ el, parent, next })
+      parent.removeChild(el)
+    }
   })
 
   // 强制触发懒加载图片
@@ -171,12 +175,12 @@ async function extractArticle(forceRefresh = false): Promise<ExtractedArticle | 
     }
     return result
   } finally {
-    // 恢复 WeChatSync UI 元素显示
-    uiElements.forEach((el, i) => {
-      if (uiDisplay[i] !== undefined) {
-        ;(el as HTMLElement).style.display = uiDisplay[i]
-      }
-    })
+    // 恢复 WeChatSync UI 元素到原位置
+    for (const { el, parent, next } of uiRestore) {
+      try {
+        parent.insertBefore(el, next)
+      } catch { /* parent may have been removed */ }
+    }
   }
 }
 
@@ -1229,7 +1233,8 @@ let inlineSyncButton: HTMLElement | null = null
  * 在文章标题旁边注入"同步文章"按钮
  */
 function injectInlineSyncButton(detection: ArticleDetection) {
-  if (inlineSyncButton) return
+  // 双重检查：变量 + DOM，防止按钮重复注入
+  if (inlineSyncButton || document.querySelector('#wechatsync-inline-sync')) return
 
   const { titleEl, platform } = detection
 
@@ -1280,7 +1285,9 @@ function injectInlineSyncButton(detection: ArticleDetection) {
   })
 
   btn.addEventListener('click', () => {
+    if (pendingLoading) return // 防止重复点击，多次加载
     pendingLoading = showLoading()
+    btn.style.pointerEvents = 'none' // 禁用按钮
     chrome.runtime.sendMessage({ type: 'TRIGGER_OPEN_EDITOR' })
   })
 
@@ -1705,7 +1712,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // 微信页面有专用 content script 处理提取，避免竞争
     const url = window.location.href
     if (url.includes('mp.weixin.qq.com/cgi-bin/appmsg') || url.includes('mp.weixin.qq.com/s')) {
-      return false // 不处理，交给 weixin-editor.ts 或 weixin.ts
+      return false // 不处理，交给 weixin.ts
     }
     const loading = showLoading()
     extractArticle().then(article => {
@@ -1714,18 +1721,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }).catch(() => { loading.remove(); sendResponse({ article: null }) })
     return true
   } else if (message.type === 'OPEN_EDITOR') {
-    // 复用按钮点击时已显示的 loading，否则新建
-    const loading = pendingLoading || showLoading()
-    pendingLoading = null
-    extractArticle().then(article => {
+    // 防止重复提取卡死页面
+    if (editorContainer) {
+      sendResponse({ success: true }) // 编辑器已打开，忽略
+      return true
+    }
+    if (pendingLoading) {
+      // 已有加载中，忽略重复请求
+      return true
+    }
+    const loading = showLoading()
+    // 强制刷新，绕过缓存（避免读到含按钮文字的旧标题）
+    extractArticle(true).then(article => {
       loading.remove()
+      // 恢复内联按钮可点击状态
+      if (inlineSyncButton) {
+        inlineSyncButton.style.pointerEvents = ''
+      }
       if (article) {
         openEditor(article, message.platforms || [], message.selectedPlatforms || [])
         sendResponse({ success: true })
       } else {
         sendResponse({ success: false, error: '无法提取文章内容' })
       }
-    }).catch(() => { loading.remove(); sendResponse({ success: false, error: '提取失败' }) })
+    }).catch(() => {
+      loading.remove()
+      if (inlineSyncButton) inlineSyncButton.style.pointerEvents = ''
+      sendResponse({ success: false, error: '提取失败' })
+    })
     return true
   } else if (message.type === 'PREPROCESS_FOR_PLATFORMS') {
     // 为多个平台预处理内容（由 background 调用）

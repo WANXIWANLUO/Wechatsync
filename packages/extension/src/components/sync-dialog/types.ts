@@ -59,4 +59,5 @@ export interface SyncDialogProps {
   onEditArticle?: () => void
   onClose?: () => void
   className?: string
+  hideArticleCard?: boolean
 }
