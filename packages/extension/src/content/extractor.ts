@@ -16,7 +16,7 @@ import { extractArticle as extractWithReader, ReaderResult } from '../lib/reader
 import { htmlToMarkdownNative, type PreprocessConfig } from '@wechatsync/core'
 import { createLogger } from '../lib/logger'
 import { preprocessContentDOM, preprocessForPlatform, backupAndSimplifyCodeBlocks, restoreCodeBlocks, type PreprocessResult } from '../lib/content-processor'
-import { createSyncFab } from '../lib/fab'
+
 
 const logger = createLogger('Extractor')
 
@@ -1299,67 +1299,41 @@ function removeInlineSyncButton() {
   }
 }
 
-// ========== 悬浮按钮 ==========
-
 // 预先显示的 loading（点击按钮时立即显示，避免等待 background 响应）
 let pendingLoading: { remove: () => void } | null = null
-
-let floatingButton: HTMLDivElement | null = null
-
-function injectFloatingButton() {
-  if (floatingButton) return
-  // 微信公众号页面已有专属悬浮按钮，不重复注入
-  if (window.location.hostname === 'mp.weixin.qq.com') return
-
-  const btn = createSyncFab({
-    onClick: () => {
-      pendingLoading = showLoading()
-      chrome.runtime.sendMessage({ type: 'TRIGGER_OPEN_EDITOR' })
-    },
-  })
-  btn.id = 'wechatsync-floating-btn'
-  btn.setAttribute('data-wechatsync-ui', '')
-
-  document.body.appendChild(btn)
-  floatingButton = btn as HTMLDivElement
-}
-
-function removeFloatingButton() {
-  if (floatingButton) {
-    floatingButton.remove()
-    floatingButton = null
-  }
-}
 
 // ========== 显示列表 (Display List) 匹配逻辑 ==========
 
 interface DisplayRule {
   id: string
-  hostname: string
-  pathPrefix: string     // 路径前缀，如 "/posts/" 或 "/"
-  url: string            // 创建时的原始 URL
-  title: string          // 页面标题
+  pattern: string        // 如 "blog.csdn.net/*/article/details/*"
+  url: string
+  title: string
   createdAt: number
 }
 
 /**
- * 检查当前页面 URL 是否匹配指定的显示规则
+ * 检查 URL 是否匹配模式（* 匹配任意字符，不跨 /）
+ * *.toutiao.com/article/* 匹配 www.toutiao.com/article/123
  */
-function matchesDisplayRule(url: string, rule: DisplayRule): boolean {
+function matchesDisplayRule(url: string, pattern: string): boolean {
   try {
     const parsed = new URL(url)
-    if (parsed.hostname !== rule.hostname) {
-      console.log('[WechatSync] matchesDisplayRule: hostname mismatch', parsed.hostname, '!==', rule.hostname)
-      return false
+    const urlParts = [parsed.hostname, ...parsed.pathname.split('/').filter(Boolean)]
+    const patternParts = pattern.split('/')
+    if (urlParts.length !== patternParts.length) return false
+    for (let i = 0; i < patternParts.length; i++) {
+      const pp = patternParts[i]
+      if (!pp.includes('*')) {
+        if (pp !== urlParts[i]) return false
+      } else if (pp !== '*') {
+        const regex = new RegExp('^' + pp.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]+') + '$')
+        if (!regex.test(urlParts[i])) return false
+      }
+      // pp === '*' → matches any segment
     }
-    if (!rule.pathPrefix || rule.pathPrefix === '/') return true
-    const result = parsed.pathname.startsWith(rule.pathPrefix)
-    if (!result) {
-      console.log('[WechatSync] matchesDisplayRule: pathname mismatch', parsed.pathname, 'does not start with', rule.pathPrefix)
-    }
-    return result
-  } catch (e) {
-    console.log('[WechatSync] matchesDisplayRule: URL parse error', e)
+    return true
+  } catch {
     return false
   }
 }
@@ -1371,22 +1345,12 @@ function isPageInDisplayList(rules: DisplayRule[]): boolean {
   if (!rules || rules.length === 0) return false
   const url = window.location.href
   for (const rule of rules) {
-    const matched = matchesDisplayRule(url, rule)
-    console.log('[WechatSync] isPageInDisplayList: url hostname=', new URL(url).hostname, 'pathname=', new URL(url).pathname, 'rule hostname=', rule.hostname, 'pathPrefix=', rule.pathPrefix, '→ matched=', matched)
+    const matched = matchesDisplayRule(url, rule.pattern)
+    console.log('[WechatSync] isPageInDisplayList: url=', url, 'pattern=', rule.pattern, '→ matched=', matched)
     if (matched) return true
   }
   return false
 }
-
-// 初始化：读取设置决定是否注入悬浮按钮
-try {
-  chrome.storage.local.get('floatingButtonEnabled', (result) => {
-    if (chrome.runtime.lastError) return
-    if (result.floatingButtonEnabled) {
-      injectFloatingButton()
-    }
-  })
-} catch { /* extension context invalidated */ }
 
 // 初始化：根据显示列表决定是否注入行内按钮
 // 使用定时轮询，简单可靠，避免 async storage + MutationObserver 的竞态
@@ -1408,7 +1372,7 @@ function tryInjectFromDisplayList() {
       }
       if (displayListChecked) return
       const rules: DisplayRule[] = result.syncButtonDisplayList || []
-      console.log('[WechatSync] got rules:', rules.length, 'rules:', JSON.stringify(rules.map(r => ({ hostname: r.hostname, pathPrefix: r.pathPrefix }))))
+      console.log('[WechatSync] got rules:', rules.length, 'rules:', JSON.stringify(rules.map(r => r.pattern)))
       if (rules.length > 0 && isPageInDisplayList(rules)) {
         displayListChecked = true
         console.log('[WechatSync] page MATCHED display list')
@@ -1458,13 +1422,6 @@ setTimeout(() => {
 // 监听设置变化，实时响应
 chrome.storage.onChanged.addListener((changes) => {
   try {
-    if (changes.floatingButtonEnabled) {
-      if (changes.floatingButtonEnabled.newValue) {
-        injectFloatingButton()
-      } else {
-        removeFloatingButton()
-      }
-    }
     if (changes.syncButtonDisplayList) {
       const newRules: DisplayRule[] = changes.syncButtonDisplayList.newValue || []
       if (isPageInDisplayList(newRules)) {

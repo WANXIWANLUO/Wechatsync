@@ -5,7 +5,7 @@
   "description": "微信公众号同步助手 Chrome 扩展",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite build --watch",
     "build": "tsc && vite build",
     "prod": "npm run build && cd dist && zip -r ../wechatsync-v$(node -p \"require('../package.json').version\").zip .",
     "preview": "vite preview",

@@ -11,14 +11,12 @@ import {
 } from '../adapters'
 import * as wordpressAdapter from '../adapters/cms/wordpress'
 import * as metaweblogAdapter from '../adapters/cms/metaweblog'
-import { startMcpClient, stopMcpClient, getMcpStatus, mcpClient } from '../mcp/client'
 import { createLogger } from '../lib/logger'
 import {
   trackInstall,
   trackCmsSync,
   trackFeatureUse,
   trackArticleExtract,
-  trackMcpUsage,
   trackCmsManagement,
   recordInstallTimestamp,
   inferErrorType,
@@ -128,12 +126,6 @@ type MessageAction =
   | { type: 'OPEN_SYNC_PAGE'; path?: string }
   | { type: 'TEST_CMS_CONNECTION'; payload: { type: CMSType; url: string; username: string; password: string } }
   | { type: 'SYNC_TO_CMS'; payload: { accountId: string; article: any } }
-  | { type: 'MCP_ENABLE' }
-  | { type: 'MCP_DISABLE' }
-  | { type: 'MCP_STATUS' }
-  | { type: 'MCP_SET_SERVER_URL'; payload: { url: string } }
-  | { type: 'MCP_WATCH_START' }
-  | { type: 'MCP_WATCH_STOP' }
   | { type: 'TRACK_ARTICLE_EXTRACT'; payload: { source: string; success: boolean; hasTitle?: boolean; hasContent?: boolean; hasCover?: boolean; contentLength?: number } }
   | { type: 'GET_SYNC_STATE' }
   | { type: 'CLEAR_SYNC_STATE' }
@@ -608,69 +600,6 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       }
     }
 
-    case 'MCP_ENABLE': {
-      // 检查是否已有 token，没有才生成新的
-      const storage = await chrome.storage.local.get(['mcpToken', 'mcpServerUrl'])
-      const token = storage.mcpToken || crypto.randomUUID()
-      await chrome.storage.local.set({ mcpEnabled: true, mcpToken: token })
-      // 设置 token、服务器地址并启动客户端
-      mcpClient.setToken(token)
-      if (storage.mcpServerUrl) {
-        mcpClient.setServerUrl(storage.mcpServerUrl)
-      }
-      startMcpClient()
-      logger.info(' MCP enabled')
-      trackMcpUsage('enable').catch(() => {})
-      // 追踪 MCP 用户里程碑
-      trackMilestone('mcp_user').catch(() => {})
-      return { success: true, token }
-    }
-
-    case 'MCP_DISABLE': {
-      // 只关闭连接，保留 token（下次启用时复用）
-      await chrome.storage.local.set({ mcpEnabled: false })
-      mcpClient.clearToken()
-      stopMcpClient()
-      logger.info(' MCP disabled')
-      trackMcpUsage('disable').catch(() => {})
-      return { success: true }
-    }
-
-    case 'MCP_SET_SERVER_URL': {
-      const url = message.payload.url
-      await chrome.storage.local.set({ mcpServerUrl: url || '' })
-      mcpClient.setServerUrl(url)
-      // 地址变更后，断开重连
-      if (mcpClient.isConnected()) {
-        mcpClient.disconnect()
-        mcpClient.resetReconnect()
-      } else {
-        mcpClient.resetReconnect()
-      }
-      return { success: true }
-    }
-
-    case 'MCP_WATCH_START': {
-      mcpClient.setActivelyWatched(true)
-      return { success: true }
-    }
-
-    case 'MCP_WATCH_STOP': {
-      mcpClient.setActivelyWatched(false)
-      return { success: true }
-    }
-
-    case 'MCP_STATUS': {
-      const storage = await chrome.storage.local.get(['mcpEnabled', 'mcpToken', 'mcpServerUrl'])
-      const mcpStatus = getMcpStatus()
-      return {
-        enabled: storage.mcpEnabled ?? false,
-        connected: mcpStatus.connected,
-        token: storage.mcpToken,  // 返回 token 供 MCP Server 使用
-        serverUrl: storage.mcpServerUrl || '',
-      }
-    }
-
     case 'TRACK_ARTICLE_EXTRACT': {
       const { source, success, hasTitle, hasContent, hasCover, contentLength } = message.payload
       trackArticleExtract(source, success, { hasTitle, hasContent, hasCover, contentLength }).catch(() => {})
@@ -1130,33 +1059,6 @@ chrome.runtime.onInstalled.addListener(async details => {
     recordInstallTimestamp().catch(() => {})
   }
 })
-
-/**
- * 启动时初始化 MCP（如果已启用）
- */
-async function initMcpIfEnabled() {
-  const storage = await chrome.storage.local.get(['mcpEnabled', 'mcpToken', 'mcpServerUrl'])
-  if (storage.mcpEnabled) {
-    if (storage.mcpToken) {
-      mcpClient.setToken(storage.mcpToken)
-      logger.info(' Starting MCP client with existing token...')
-    } else {
-      // 没有 token，生成新的
-      const token = crypto.randomUUID()
-      await chrome.storage.local.set({ mcpToken: token })
-      mcpClient.setToken(token)
-      logger.info(' Starting MCP client with new token...')
-    }
-    // 加载自定义服务器地址（支持远程桥接）
-    if (storage.mcpServerUrl) {
-      mcpClient.setServerUrl(storage.mcpServerUrl)
-    }
-    startMcpClient()
-  }
-}
-
-// 启动 MCP 客户端（如果已启用）
-initMcpIfEnabled()
 
 /**
  * 预检查平台认证状态（后台静默执行）

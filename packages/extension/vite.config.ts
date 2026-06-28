@@ -122,6 +122,8 @@ export default defineConfig(({ mode }) => {
     },
   },
   build: {
+    // 每次构建前清空输出目录
+    emptyOutDir: true,
     // 开发模式: 不压缩，生成 sourcemap
     minify: isDev ? false : 'esbuild',
     sourcemap: isDev ? 'inline' : false,

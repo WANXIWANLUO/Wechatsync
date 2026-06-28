@@ -1,18 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
-import { X, Plug, PlugZap, Plus, Trash2, ChevronRight } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { X, Plus, Trash2, Info } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { trackFeatureDiscovery } from '../../lib/analytics'
 
 interface SettingsDrawerProps {
   open: boolean
   onClose: () => void
-}
-
-interface McpStatus {
-  enabled: boolean
-  connected: boolean
-  token?: string
-  serverUrl?: string
 }
 
 interface CMSAccount {
@@ -23,107 +15,17 @@ interface CMSAccount {
 }
 
 export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
-  const [mcpStatus, setMcpStatus] = useState<McpStatus>({ enabled: false, connected: false })
   const [cmsAccounts, setCmsAccounts] = useState<CMSAccount[]>([])
-  const [loading, setLoading] = useState(false)
-  const [floatingButtonEnabled, setFloatingButtonEnabled] = useState(false)
-  const [serverUrlInput, setServerUrlInput] = useState('')
-  const serverUrlTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // 获取状态
   useEffect(() => {
     if (!open) return
 
-    // MCP 状态
-    chrome.runtime.sendMessage({ type: 'MCP_STATUS' }, (response) => {
-      if (response && !response.error) {
-        setMcpStatus({
-          enabled: response.enabled ?? false,
-          connected: response.connected ?? false,
-          token: response.token,
-          serverUrl: response.serverUrl,
-        })
-        setServerUrlInput(response.serverUrl || '')
-      }
-    })
-
     // CMS 账户
     chrome.storage.local.get('cmsAccounts', (result) => {
       setCmsAccounts(result.cmsAccounts || [])
     })
-
-    // 悬浮按钮设置
-    chrome.storage.local.get('floatingButtonEnabled', (result) => {
-      setFloatingButtonEnabled(result.floatingButtonEnabled ?? false)
-    })
   }, [open])
-
-  // MCP 状态轮询 + 通知 background 加速重连
-  useEffect(() => {
-    if (!open || !mcpStatus.enabled) return
-
-    // 通知 background：用户正在关注，加速重连
-    chrome.runtime.sendMessage({ type: 'MCP_WATCH_START' })
-
-    const interval = setInterval(() => {
-      chrome.runtime.sendMessage({ type: 'MCP_STATUS' }, (response) => {
-        if (response && !response.error) {
-          setMcpStatus(prev => ({ ...prev, connected: response.connected ?? false }))
-        }
-      })
-    }, 3000)
-
-    return () => {
-      clearInterval(interval)
-      // 设置页关闭，恢复正常重连策略
-      chrome.runtime.sendMessage({ type: 'MCP_WATCH_STOP' })
-    }
-  }, [open, mcpStatus.enabled])
-
-  // 切换 MCP
-  const toggleMcp = async () => {
-    setLoading(true)
-    const action = mcpStatus.enabled ? 'MCP_DISABLE' : 'MCP_ENABLE'
-
-    // 追踪 MCP 功能发现
-    if (!mcpStatus.enabled) {
-      trackFeatureDiscovery('mcp', 'settings').catch(() => {})
-    }
-
-    chrome.runtime.sendMessage({ type: action }, (response) => {
-      setLoading(false)
-      if (response?.success) {
-        setMcpStatus(prev => ({
-          ...prev,
-          enabled: !prev.enabled,
-          connected: false,
-          token: response.token,  // 保存返回的 token
-        }))
-      }
-    })
-  }
-
-  // 服务器地址变更（防抖 800ms）
-  const handleServerUrlChange = (value: string) => {
-    setServerUrlInput(value)
-    if (serverUrlTimer.current) {
-      clearTimeout(serverUrlTimer.current)
-    }
-    serverUrlTimer.current = setTimeout(() => {
-      chrome.runtime.sendMessage({
-        type: 'MCP_SET_SERVER_URL',
-        payload: { url: value.trim() },
-      })
-      setMcpStatus(prev => ({ ...prev, serverUrl: value.trim() }))
-    }, 800)
-  }
-
-  // 切换悬浮按钮
-  const toggleFloatingButton = () => {
-    const next = !floatingButtonEnabled
-    setFloatingButtonEnabled(next)
-    chrome.storage.local.set({ floatingButtonEnabled: next })
-  }
 
   // 删除 CMS 账户
   const deleteCmsAccount = async (id: string) => {
@@ -148,7 +50,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
 
       {/* 抽屉 */}
       <div className={cn(
-        'fixed inset-y-0 right-0 w-80 bg-background z-50 shadow-xl',
+        'fixed inset-y-0 right-0 w-80 bg-background z-50 shadow-xl relative',
         'transform transition-transform duration-200',
         open ? 'translate-x-0' : 'translate-x-full'
       )}>
@@ -165,100 +67,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
 
         {/* 内容 */}
         <div className="p-4 space-y-6 overflow-y-auto h-[calc(100%-57px)]">
-          {/* 同步桥接设置 */}
-          <div className="space-y-3">
-            <h3 className="text-sm font-medium text-muted-foreground">同步桥接</h3>
-
-            <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-2">
-                {mcpStatus.connected ? (
-                  <PlugZap className="w-5 h-5 text-green-500" />
-                ) : (
-                  <Plug className="w-5 h-5 text-muted-foreground" />
-                )}
-                <div>
-                  <p className="text-sm font-medium">CLI / MCP 连接</p>
-                  <p className="text-xs text-muted-foreground">
-                    {mcpStatus.enabled
-                      ? mcpStatus.connected
-                        ? '已连接'
-                        : '等待连接...'
-                      : '未启用'}
-                  </p>
-                </div>
-              </div>
-
-              <button
-                onClick={toggleMcp}
-                disabled={loading}
-                className={cn(
-                  'relative w-11 h-6 rounded-full transition-colors',
-                  mcpStatus.enabled ? 'bg-primary' : 'bg-muted-foreground/30',
-                  loading && 'opacity-50'
-                )}
-              >
-                <span
-                  className={cn(
-                    'absolute top-1 w-4 h-4 rounded-full bg-white transition-transform',
-                    mcpStatus.enabled ? 'translate-x-6' : 'translate-x-1'
-                  )}
-                />
-              </button>
-            </div>
-
-            {mcpStatus.enabled && (
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground">
-                  供 CLI 和 MCP Server 通过 WebSocket 桥接同步文章
-                </p>
-                {mcpStatus.token && (
-                  <div className="p-2 bg-muted/50 rounded text-xs">
-                    <p className="text-muted-foreground mb-1">Token:</p>
-                    <code className="block bg-background p-1.5 rounded break-all select-all">
-                      {mcpStatus.token}
-                    </code>
-                  </div>
-                )}
-                <div className="p-2 bg-muted/50 rounded text-xs">
-                  <p className="text-muted-foreground mb-1">服务器地址 (留空使用本地默认):</p>
-                  <input
-                    type="text"
-                    value={serverUrlInput}
-                    onChange={(e) => handleServerUrlChange(e.target.value)}
-                    placeholder="ws://localhost:9527"
-                    className="w-full bg-background p-1.5 rounded border border-border text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* 悬浮同步按钮 */}
-          <div className="space-y-3">
-            <h3 className="text-sm font-medium text-muted-foreground">网页功能</h3>
-
-            <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-              <div>
-                <p className="text-sm font-medium">悬浮同步按钮</p>
-                <p className="text-xs text-muted-foreground">在网页右下角显示快捷同步按钮</p>
-              </div>
-              <button
-                onClick={toggleFloatingButton}
-                className={cn(
-                  'relative w-11 h-6 rounded-full transition-colors',
-                  floatingButtonEnabled ? 'bg-primary' : 'bg-muted-foreground/30',
-                )}
-              >
-                <span
-                  className={cn(
-                    'absolute top-1 w-4 h-4 rounded-full bg-white transition-transform',
-                    floatingButtonEnabled ? 'translate-x-6' : 'translate-x-1'
-                  )}
-                />
-              </button>
-            </div>
-          </div>
-
           {/* CMS 账户 */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -302,21 +110,19 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
             )}
           </div>
 
-          {/* 历史记录 */}
-          <div className="space-y-3">
-            <button
-              onClick={() => {
-                onClose()
-                window.location.hash = '/history'
-              }}
-              className="flex items-center justify-between w-full p-3 bg-muted/50 rounded-lg hover:bg-muted"
-            >
-              <span className="text-sm font-medium">查看全部历史</span>
-              <ChevronRight className="w-4 h-4 text-muted-foreground" />
-            </button>
-          </div>
-
         </div>
+
+        {/* 右下角关于按钮 */}
+        <button
+          onClick={() => {
+            onClose()
+            window.location.hash = '/about'
+          }}
+          className="absolute bottom-3 right-4 p-2 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+          title="关于"
+        >
+          <Info className="w-4 h-4" />
+        </button>
       </div>
     </>
   )

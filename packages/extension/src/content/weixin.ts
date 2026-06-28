@@ -108,27 +108,19 @@ function extractWeixinArticle() {
 
 interface DisplayRule {
   id: string
-  hostname: string
-  pathPrefix: string
+  pattern: string
   url: string
   title: string
   createdAt: number
 }
 
 function isPageInDisplayList(): boolean {
-  try {
-    const storageKey = 'syncButtonDisplayList'
-    // 同步读取 storage (已在页面加载时缓存到 onChanged)
-    return (window as any).__wcs_displayMatched === true
-  } catch {
-    return false
-  }
+  return (window as any).__wcs_displayMatched === true
 }
 
 // 响应消息
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'DETECT_ARTICLE') {
-    // 轻量检测 WeChat 文章页
     const titleEl = document.querySelector('#activity-name')
     const isArticle = !!(titleEl && document.querySelector('#js_content'))
     if (isArticle) {
@@ -146,11 +138,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ article })
     return true
   }
-  // 不处理其他消息，返回 false 让 Chrome 忽略
   return false
 })
 
-// 按钮注入（仅在显示列表匹配时）
 function tryInject() {
   if (!isPageInDisplayList()) return false
   if (document.querySelector('#activity-name') && document.querySelector('#js_content')) {
@@ -160,21 +150,32 @@ function tryInject() {
   return false
 }
 
-// 检查显示列表并设置标记
+function matchesDisplayRule(url: string, pattern: string): boolean {
+  try {
+    const parsed = new URL(url)
+    const urlParts = [parsed.hostname, ...parsed.pathname.split('/').filter(Boolean)]
+    const patternParts = pattern.split('/')
+    if (urlParts.length !== patternParts.length) return false
+    for (let i = 0; i < patternParts.length; i++) {
+      const pp = patternParts[i]
+      if (!pp.includes('*')) {
+        if (pp !== urlParts[i]) return false
+      } else if (pp !== '*') {
+        const regex = new RegExp('^' + pp.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]+') + '$')
+        if (!regex.test(urlParts[i])) return false
+      }
+    }
+    return true
+  } catch { return false }
+}
+
 function checkDisplayList() {
   try {
     chrome.storage.local.get('syncButtonDisplayList', (result) => {
       if (chrome.runtime.lastError) return
       const rules: DisplayRule[] = result.syncButtonDisplayList || []
       const url = window.location.href
-      const matched = rules.some(rule => {
-        try {
-          const parsed = new URL(url)
-          if (parsed.hostname !== rule.hostname) return false
-          if (!rule.pathPrefix || rule.pathPrefix === '/') return true
-          return parsed.pathname.startsWith(rule.pathPrefix)
-        } catch { return false }
-      })
+      const matched = rules.some(rule => matchesDisplayRule(url, rule.pattern))
       ;(window as any).__wcs_displayMatched = matched
       if (matched) tryInject()
     })
@@ -182,7 +183,6 @@ function checkDisplayList() {
 }
 checkDisplayList()
 
-// 监听显示列表变化
 chrome.storage.onChanged.addListener((changes) => {
   try {
     if (changes.syncButtonDisplayList) {

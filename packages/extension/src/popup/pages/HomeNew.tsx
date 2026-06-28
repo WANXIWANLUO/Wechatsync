@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings, Plus, Clock, X, Download, Info, Eye, FileText, Check, Pencil } from 'lucide-react'
+import { Settings, Users, Clock, X, Download, Eye, FileText, Check, Pencil } from 'lucide-react'
 import { useSyncStore } from '../stores/sync'
 import { SettingsDrawer } from '../components/SettingsDrawer'
 import { cn } from '@/lib/utils'
-import { trackPageView, trackFeatureDiscovery } from '../../lib/analytics'
+import { trackPageView } from '../../lib/analytics'
 import { createLogger } from '../../lib/logger'
 import { getCachedUpdateInfo, dismissUpdate, type UpdateCheckResult } from '../../lib/version-check'
 
@@ -14,8 +14,7 @@ const logger = createLogger('HomeNew')
 
 interface DisplayRule {
   id: string
-  hostname: string
-  pathPrefix: string
+  pattern: string    // e.g. blog.csdn.net/*/article/details/*
   url: string
   title: string
   createdAt: number
@@ -24,39 +23,53 @@ interface DisplayRule {
 const DISPLAY_LIST_KEY = 'syncButtonDisplayList'
 
 /**
- * 从 URL 中提取特征：主机名 + 路径前缀
- * 路径前缀取除最后一段之外的所有路径部分
+ * 从 URL 中提取匹配模式，变量段替换为 *
+ * e.g. csdn.net/username/article/details/id → csdn.net / star / article / details / star
  */
-function extractUrlFeatures(url: string): { hostname: string; pathPrefix: string } {
+function extractUrlPattern(url: string): string {
   try {
     const parsed = new URL(url)
-    const pathParts = parsed.pathname.split('/').filter(Boolean)
-
-    let pathPrefix = ''
-    if (pathParts.length > 1) {
-      pathPrefix = '/' + pathParts.slice(0, -1).join('/') + '/'
-    } else if (pathParts.length === 1) {
-      pathPrefix = '/'
-    }
-
-    return {
-      hostname: parsed.hostname,
-      pathPrefix,
-    }
+    const parts = [parsed.hostname, ...parsed.pathname.split('/').filter(Boolean)]
+    const patternParts = parts.map(part => isVariableSegment(part) ? '*' : part)
+    return patternParts.join('/')
   } catch {
-    return { hostname: '', pathPrefix: '' }
+    return ''
   }
 }
 
+/** 判断路径段是否为变量（用户ID、文章ID、slug 等） */
+function isVariableSegment(segment: string): boolean {
+  if (/^\d+$/.test(segment)) return true
+  if (/^[a-f0-9]{8,}$/i.test(segment)) return true
+  if (/^[a-z0-9]+(-[a-z0-9]+){1,}$/i.test(segment)) return true
+  if (/^[a-z]+\d+$/.test(segment) && segment.length > 6) return true
+  return false
+}
+
 /**
- * 检查 URL 是否匹配规则
+ * 检查 URL 是否匹配模式（* 匹配任意字符，不跨 /）
+ * *.toutiao.com/article/* 匹配 www.toutiao.com/article/123
  */
-function urlMatchesRule(url: string, rule: DisplayRule): boolean {
+function urlMatchesPattern(url: string, pattern: string): boolean {
   try {
     const parsed = new URL(url)
-    if (parsed.hostname !== rule.hostname) return false
-    if (!rule.pathPrefix || rule.pathPrefix === '/') return true
-    return parsed.pathname.startsWith(rule.pathPrefix)
+    const urlParts = [parsed.hostname, ...parsed.pathname.split('/').filter(Boolean)]
+    const patternParts = pattern.split('/')
+
+    if (urlParts.length !== patternParts.length) return false
+
+    for (let i = 0; i < patternParts.length; i++) {
+      const pp = patternParts[i]
+      if (!pp.includes('*')) {
+        if (pp !== urlParts[i]) return false
+      } else if (pp !== '*') {
+        // 含 * 的 glob 模式，如 *.toutiao.com
+        const regex = new RegExp('^' + pp.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]+') + '$')
+        if (!regex.test(urlParts[i])) return false
+      }
+      // pp === '*' → 匹配任意段，不检查
+    }
+    return true
   } catch {
     return false
   }
@@ -122,7 +135,7 @@ export function HomeNew() {
       setDisplayList(rules)
 
       const url = tabUrl || currentTabUrl
-      if (url && rules.some(r => urlMatchesRule(url, r))) {
+      if (url && rules.some(r => urlMatchesPattern(url, r.pattern))) {
         setCurrentPageDisplayed(true)
       }
     } catch {
@@ -149,11 +162,10 @@ export function HomeNew() {
     setAddingToDisplayList(true)
 
     try {
-      const features = extractUrlFeatures(currentTabUrl)
+      const pattern = extractUrlPattern(currentTabUrl)
       const newRule: DisplayRule = {
         id: `rule_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-        hostname: features.hostname,
-        pathPrefix: features.pathPrefix,
+        pattern,
         url: currentTabUrl,
         title: currentTabTitle || '',
         createdAt: Date.now(),
@@ -186,7 +198,7 @@ export function HomeNew() {
   }
 
   return (
-    <div className="flex flex-col h-[500px]">
+    <div className="flex flex-col h-[500px] relative">
       {/* Header */}
       <header className="flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-b">
         <div className="flex items-center gap-2">
@@ -195,11 +207,11 @@ export function HomeNew() {
         </div>
         <nav className="flex items-center gap-0.5">
           <button
-            onClick={() => navigate('/add-cms')}
+            onClick={() => navigate('/account-list')}
             className="flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg hover:bg-muted transition-colors"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="text-[10px] text-muted-foreground leading-none">添加</span>
+            <Users className="w-3.5 h-3.5" />
+            <span className="text-[10px] text-muted-foreground leading-none">账号列表</span>
           </button>
           <button
             onClick={() => navigate('/history')}
@@ -213,24 +225,7 @@ export function HomeNew() {
             className="flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg hover:bg-muted transition-colors"
           >
             <Eye className="w-3.5 h-3.5" />
-            <span className="text-[10px] text-muted-foreground leading-none">显示列表</span>
-          </button>
-          <button
-            onClick={() => navigate('/about')}
-            className="flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg hover:bg-muted transition-colors"
-          >
-            <Info className="w-3.5 h-3.5" />
-            <span className="text-[10px] text-muted-foreground leading-none">关于</span>
-          </button>
-          <button
-            onClick={() => {
-              setSettingsOpen(true)
-              trackFeatureDiscovery('settings', 'header_icon').catch(() => {})
-            }}
-            className="flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg hover:bg-muted transition-colors"
-          >
-            <Settings className="w-3.5 h-3.5" />
-            <span className="text-[10px] text-muted-foreground leading-none">设置</span>
+            <span className="text-[10px] text-muted-foreground leading-none">按钮规则</span>
           </button>
         </nav>
       </header>
@@ -395,6 +390,15 @@ export function HomeNew() {
           </div>
         )}
       </div>
+
+      {/* 左下角设置按钮 */}
+      <button
+        onClick={() => setSettingsOpen(true)}
+        className="absolute bottom-2 left-2 p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+        title="设置"
+      >
+        <Settings className="w-4 h-4" />
+      </button>
 
       {/* Settings drawer */}
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
