@@ -26,7 +26,7 @@ export class DoubanAdapter extends CodeAdapter {
     id: 'douban',
     name: '豆瓣',
     icon: 'https://www.douban.com/favicon.ico',
-    homepage: 'https://www.douban.com/note/create',
+    homepage: 'https://www.douban.com/topic/create?subtype=note',
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
@@ -55,65 +55,46 @@ export class DoubanAdapter extends CodeAdapter {
   async checkAuth(): Promise<AuthResult> {
     try {
       const response = await this.runtime.fetch(
-        'https://www.douban.com/note/create',
-        {
-          method: 'GET',
-          credentials: 'include',
-        }
+        'https://accounts.douban.com/passport/setting',
+        { method: 'GET', credentials: 'include', redirect: 'follow' }
       )
 
-      const html = await response.text()
-
-      // 解析页面中的 JavaScript 变量
-      const userNameMatch = html.match(/_USER_NAME\s*=\s*['"]([^'"]+)['"]/)
-      const userAvatarMatch = html.match(/_USER_AVATAR\s*=\s*['"]([^'"]+)['"]/)
-      const noteIdMatch = html.match(/name="note_id"\s+value="(\d+)"/)
-      const ckMatch = html.match(/name="ck"\s+value="([^"]+)"/)
-
-      // 解析 _POST_PARAMS
-      const postParamsMatch = html.match(/_POST_PARAMS\s*=\s*(\{[\s\S]*?\});/)
-
-      if (!userNameMatch || !noteIdMatch || !ckMatch) {
+      if (!response.ok) {
         return { isAuthenticated: false }
       }
 
-      this.username = userNameMatch[1]
-      this.avatar = userAvatarMatch ? userAvatarMatch[1] : ''
-      this.formData = {
-        note_id: noteIdMatch[1],
-        ck: ckMatch[1],
+      const html = await response.text()
+
+      const configMatch = html.match(/window\._CONFIG\s*=\s*(\{[\s\S]*?\});/)
+      if (!configMatch) {
+        return { isAuthenticated: false }
       }
 
-      // 解析 _POST_PARAMS 获取 upload_auth_token
-      if (postParamsMatch) {
-        try {
-          // 简化解析，只提取 siteCookie.value
-          const siteCookieMatch = postParamsMatch[1].match(/siteCookie[^}]*value\s*:\s*['"]([^'"]+)['"]/)
-          if (siteCookieMatch) {
-            this.postParams = {
-              siteCookie: { value: siteCookieMatch[1] }
-            }
+      try {
+        const config = JSON.parse(configMatch[1])
+        const nick = config.nick
+        const uid = config.uid || config.user_id
+
+        if (nick && uid) {
+          this.username = nick
+          this.avatar = config.pic || config.large_pic || ''
+          this.formData = { note_id: String(uid), ck: config.ck || '' }
+
+          return {
+            isAuthenticated: true,
+            userId: String(uid),
+            username: this.username,
+            avatar: this.avatar,
           }
-        } catch (e) {
-          logger.warn('Failed to parse _POST_PARAMS:', e)
         }
+      } catch (e) {
+        logger.warn('Failed to parse _CONFIG:', e)
       }
 
-      logger.debug('Auth info:', {
-        username: this.username,
-        noteId: this.formData.note_id,
-        hasPostParams: !!this.postParams,
-      })
-
-      return {
-        isAuthenticated: true,
-        userId: this.username,
-        username: this.username,
-        avatar: this.avatar,
-      }
+      return { isAuthenticated: false }
     } catch (error) {
-      logger.debug('checkAuth: not logged in -', error)
-      return { isAuthenticated: false, error: (error as Error).message }
+      logger.debug('checkAuth: failed -', error)
+      return { isAuthenticated: false }
     }
   }
 

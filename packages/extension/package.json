@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "prod": "npm run build && cd dist && zip -r ../wechatsync-v$(node -p \"require('../package.json').version\").zip .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
