@@ -101,24 +101,27 @@ async function preloadLazyImages(): Promise<void> {
     }
   })
 
-  // 3. 逐屏滚动文章内容区 — 触发框架 IntersectionObserver
-  const article = document.querySelector('article') as HTMLElement | null
-  const targetEl = article || document.body
-  const scrollY = window.scrollY
-  const scrollX = window.scrollX
-  const rect = targetEl.getBoundingClientRect()
-  const elTop = rect.top + scrollY
-  const elHeight = rect.height
-  const viewportHeight = window.innerHeight
+  // 3. 逐屏滚动文章内容区 — 仅今日头条需要（触发框架 IntersectionObserver 懒加载）
+  const isToutiao = window.location.hostname.includes('toutiao.com')
+  if (isToutiao) {
+    const article = document.querySelector('article') as HTMLElement | null
+    const targetEl = article || document.body
+    const scrollY = window.scrollY
+    const scrollX = window.scrollX
+    const rect = targetEl.getBoundingClientRect()
+    const elTop = rect.top + scrollY
+    const elHeight = rect.height
+    const viewportHeight = window.innerHeight
 
-  if (elHeight <= viewportHeight * 1.2) return
-
-  for (let offset = viewportHeight; offset <= elHeight; offset += viewportHeight * 0.7) {
-    window.scrollTo({ left: scrollX, top: elTop + offset, behavior: 'instant' as ScrollBehavior })
-    await new Promise(r => setTimeout(r, 80))
+    if (elHeight > viewportHeight * 1.2) {
+      for (let offset = viewportHeight; offset <= elHeight; offset += viewportHeight * 0.7) {
+        window.scrollTo({ left: scrollX, top: elTop + offset, behavior: 'instant' as ScrollBehavior })
+        await new Promise(r => setTimeout(r, 80))
+      }
+      window.scrollTo({ left: scrollX, top: scrollY, behavior: 'instant' as ScrollBehavior })
+      await new Promise(r => setTimeout(r, 300))
+    }
   }
-  window.scrollTo({ left: scrollX, top: scrollY, behavior: 'instant' as ScrollBehavior })
-  await new Promise(r => setTimeout(r, 300))
 }
 
 // 提取结果缓存：同一页面只提取一次，后续点击直接复用
@@ -1726,11 +1729,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ success: true }) // 编辑器已打开，忽略
       return true
     }
-    if (pendingLoading) {
-      // 已有加载中，忽略重复请求
-      return true
-    }
-    const loading = showLoading()
+    // 如果内联按钮点击时已预显示 loading，复用它；否则创建新的
+    const loading = pendingLoading || showLoading()
+    pendingLoading = null
     // 强制刷新，绕过缓存（避免读到含按钮文字的旧标题）
     extractArticle(true).then(article => {
       loading.remove()
@@ -1740,14 +1741,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       if (article) {
         openEditor(article, message.platforms || [], message.selectedPlatforms || [])
-        sendResponse({ success: true })
-      } else {
-        sendResponse({ success: false, error: '无法提取文章内容' })
       }
+      try { sendResponse(article ? { success: true } : { success: false, error: '无法提取文章内容' }) } catch { /* channel closed */ }
     }).catch(() => {
       loading.remove()
       if (inlineSyncButton) inlineSyncButton.style.pointerEvents = ''
-      sendResponse({ success: false, error: '提取失败' })
+      try { sendResponse({ success: false, error: '提取失败' }) } catch { /* channel closed */ }
     })
     return true
   } else if (message.type === 'PREPROCESS_FOR_PLATFORMS') {

@@ -192,7 +192,7 @@ export function HomeNew() {
       chrome.tabs.sendMessage(tab.id, {
         type: 'OPEN_EDITOR',
         platforms: allPlatforms,
-      })
+      }, () => void chrome.runtime.lastError)
       window.close()
     }
   }

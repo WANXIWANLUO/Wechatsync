@@ -959,6 +959,9 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
         type: 'OPEN_EDITOR',
         platforms: [...dslWithType, ...cmsPlatforms],
         selectedPlatforms: [],
+      }, () => {
+        // 提供 callback 保持消息通道存活（MV3 SW 不会提前关闭通道）
+        void chrome.runtime.lastError
       })
       return { success: true }
     }
