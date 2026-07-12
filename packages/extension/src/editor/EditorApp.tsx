@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { X, Loader2 } from 'lucide-react'
+import { X, Loader2, Sun, Moon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SyncDialog } from '@/components/sync-dialog'
 import type { Platform, SyncResult, PlatformProgress } from '@/components/sync-dialog/types'
 import { createLogger } from '../lib/logger'
+import { htmlToMarkdownNative, markdownToHtml } from '@wechatsync/core'
+import { MarkdownEditor } from './MarkdownEditor'
 
 const logger = createLogger('Editor')
 
@@ -38,12 +40,23 @@ export function EditorApp() {
   const currentSyncIdRef = useRef<string | null>(null)
   const [showSyncDialog, setShowSyncDialog] = useState(false)
 
+  // 仅 Markdown 模式
+  const [mdContent, setMdContent] = useState('')
+  const [isDark, setIsDark] = useState<boolean>(
+    () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false,
+  )
+  // 封面预览弹层
+  const [coverOpen, setCoverOpen] = useState(false)
+  // 标题是否聚焦（聚焦时允许换行，便于编辑长标题）
+  const [titleFocused, setTitleFocused] = useState(false)
+
+  const handleToggleTheme = () => setIsDark((v) => !v)
+
   useEffect(() => {
     currentSyncIdRef.current = currentSyncId
   }, [currentSyncId])
 
   const titleRef = useRef<HTMLHeadingElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
 
   // Receive messages from parent window
   useEffect(() => {
@@ -64,9 +77,8 @@ export function EditorApp() {
 
         if (data.type === 'ARTICLE_DATA') {
           setArticle(data.article)
-          if (contentRef.current && data.article.content) {
-            contentRef.current.innerHTML = data.article.content
-          }
+          // 仅 Markdown：把原始 HTML 内容转成 Markdown 源码初始化编辑器
+          setMdContent(htmlToMarkdownNative(data.article.content || ''))
         } else if (data.type === 'PLATFORMS_DATA') {
           setPlatforms(data.platforms)
           if (data.selectedPlatformIds && data.selectedPlatformIds.length > 0) {
@@ -140,12 +152,16 @@ export function EditorApp() {
   // Get edited article content
   const getEditedArticle = useCallback(() => {
     if (!article) return null
+    const title = titleRef.current?.innerText || article.title
+    // 仅 Markdown：content 用 html 形式（供 HTML 平台），
+    // markdown 保留原始源码（供 Markdown 平台，避免 md→html→md 往返损耗）
     return {
       ...article,
-      title: titleRef.current?.innerText || article.title,
-      content: contentRef.current?.innerHTML || article.content,
+      title,
+      content: markdownToHtml(mdContent),
+      markdown: mdContent,
     }
-  }, [article])
+  }, [article, mdContent])
 
   // ── SyncDialog action handlers ──
 
@@ -234,15 +250,43 @@ export function EditorApp() {
   const authenticatedCount = platforms.filter(p => p.isAuthenticated).length
 
   return (
-    <div className="bg-gray-50">
+    <div className={cn('h-screen flex flex-col bg-gray-50 transition-colors', isDark && 'dark')}>
       {/* Toolbar — inner width follows article content */}
-      <header className="fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50">
-        <div className="max-w-2xl mx-auto px-10 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <img src={chrome.runtime.getURL('assets/icon-48.png')} alt="Logo" className="w-6 h-6" />
-            <span className="font-medium text-gray-700">同步助手 - 点击内容可直接修改</span>
+      <header className={cn('shrink-0 border-b shadow-sm z-50 transition-colors', isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-gray-200')}>
+        <div className="max-w-[1400px] w-full mx-auto px-4 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            {/* 封面缩略图：点击展开大图 */}
+            {article?.cover && (
+              <button
+                type="button"
+                onClick={() => setCoverOpen(true)}
+                title="查看封面大图"
+                className={cn(
+                  'w-8 h-8 rounded-md overflow-hidden border shrink-0 transition-transform hover:scale-105',
+                  isDark ? 'border-slate-700' : 'border-gray-200',
+                )}
+              >
+                <img src={article.cover} alt="封面缩略图" className="w-full h-full object-cover" />
+              </button>
+            )}
+            {/* 标题放在 header，点选即可编辑 */}
+            <div
+              ref={titleRef}
+              contentEditable
+              suppressContentEditableWarning
+              onFocus={() => setTitleFocused(true)}
+              onBlur={() => setTitleFocused(false)}
+              title="点击编辑标题"
+              className={cn(
+                'flex-1 min-w-0 text-sm font-medium rounded px-2 py-1 outline-none transition-colors cursor-text',
+                titleFocused ? 'whitespace-normal' : 'truncate',
+                isDark ? 'text-slate-100 hover:bg-slate-800/60 focus:bg-slate-800/60' : 'text-gray-800 hover:bg-gray-100 focus:bg-blue-50',
+              )}
+            >
+              {article.title}
+            </div>
             {article?.extractor && (
-              <span className="px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-500 rounded opacity-0 hover:opacity-100 transition-opacity" title="Content extractor used">
+              <span className="px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-500 rounded opacity-0 hover:opacity-100 transition-opacity shrink-0" title="Content extractor used">
                 {article.extractor}
               </span>
             )}
@@ -250,9 +294,16 @@ export function EditorApp() {
 
           <div className="flex items-center gap-2">
             <button
+              onClick={handleToggleTheme}
+              className={cn('p-2 rounded-lg transition-colors shrink-0', isDark ? 'hover:bg-slate-800 text-slate-300' : 'hover:bg-gray-100 text-gray-500')}
+              title={isDark ? '切换为浅色' : '切换为深色'}
+            >
+              {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
+            <button
               onClick={() => setShowSyncDialog(true)}
               className={cn(
-                'px-4 py-2 rounded-lg font-medium transition-colors',
+                'px-4 py-2 rounded-lg font-medium transition-colors shrink-0',
                 authenticatedCount > 0
                   ? 'bg-blue-500 text-white hover:bg-blue-600'
                   : 'bg-gray-200 text-gray-400 cursor-not-allowed'
@@ -264,7 +315,7 @@ export function EditorApp() {
 
             <button
               onClick={handleClose}
-              className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+              className={cn('p-2 rounded-lg transition-colors shrink-0', isDark ? 'hover:bg-slate-800' : 'hover:bg-gray-100')}
               title="关闭"
             >
               <X className="w-5 h-5 text-gray-500" />
@@ -272,6 +323,29 @@ export function EditorApp() {
           </div>
         </div>
       </header>
+
+      {/* 封面大图弹层 */}
+      {coverOpen && article?.cover && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-8"
+          onClick={() => setCoverOpen(false)}
+        >
+          <button
+            type="button"
+            onClick={() => setCoverOpen(false)}
+            className="absolute right-4 top-4 p-2 rounded-lg bg-white/10 text-white hover:bg-white/20 transition-colors"
+            title="关闭"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <img
+            src={article.cover}
+            alt="封面大图"
+            className="max-w-full max-h-full rounded-xl shadow-2xl object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
 
       {/* Rate limit warning */}
       {rateLimitWarning && (
@@ -289,62 +363,42 @@ export function EditorApp() {
         </div>
       )}
 
-      {/* Article content area */}
-      <main className="pt-16 pb-8">
-        <article className="w-full max-w-2xl mx-auto bg-white shadow-sm px-10 py-8">
-          {article.cover && (
-            <div className="mb-8">
-              <span className="inline-block text-[10px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded mb-2">封面图</span>
-              <img
-                src={article.cover}
-                alt=""
-                className="w-full rounded-lg"
-                style={{ maxHeight: '50vh', objectFit: 'contain', objectPosition: 'top' }}
-              />
-            </div>
-          )}
+      {/* Article content area — 占满 header 以下全部空间 */}
+      <main className={cn('flex-1 min-h-0 flex flex-col py-3', isDark ? 'bg-slate-950' : 'bg-gray-50')}>
+        <div className="flex flex-1 min-h-0 max-w-[1400px] w-full mx-auto px-4">
+          <MarkdownEditor value={mdContent} onChange={setMdContent} dark={isDark} />
+        </div>
 
-          <span className="inline-block text-[10px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded mb-2">标题</span>
-          <h1
-            ref={titleRef}
-            contentEditable
-            suppressContentEditableWarning
-            className="text-3xl font-bold text-gray-900 mb-8 outline-none border border-transparent hover:border-gray-200 focus:border-blue-300 focus:bg-blue-50 rounded px-2 -mx-2 leading-tight transition-colors bg-slate-50"
-          >
-            {article.title}
-          </h1>
-
-          <span className="inline-block text-[10px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded mb-2">正文</span>
-          <div
-            ref={contentRef}
-            contentEditable
-            suppressContentEditableWarning
-            className="outline-none border border-transparent hover:border-gray-200 focus:border-blue-300 focus:bg-blue-50/50 rounded transition-colors article-content"
-            style={{ fontSize: '16px', lineHeight: '1.8', color: '#333' }}
-            dangerouslySetInnerHTML={{ __html: article.content }}
-          />
-          <style>{`
-            .article-content p { margin-bottom: 1em; }
-            .article-content h1 { font-size: 2em; font-weight: bold; margin: 1em 0 0.5em; }
-            .article-content h2 { font-size: 1.5em; font-weight: bold; margin: 1em 0 0.5em; }
-            .article-content h3 { font-size: 1.25em; font-weight: 600; margin: 0.8em 0 0.4em; }
-            .article-content img { width: 100% !important; max-width: 100% !important; height: auto !important; margin: 1em 0; display: block; }
-            .article-content pre { background: #f5f5f5; padding: 1em; border-radius: 6px; overflow-x: auto; margin: 1em 0; font-size: 14px; }
-            .article-content code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
-            .article-content pre code { background: none; padding: 0; }
-            .article-content blockquote { border-left: 4px solid #ddd; padding-left: 1em; margin: 1em 0; color: #666; font-style: italic; }
-            .article-content ul { list-style: disc; padding-left: 2em; margin: 1em 0; }
-            .article-content ol { list-style: decimal; padding-left: 2em; margin: 1em 0; }
-            .article-content li { margin-bottom: 0.5em; }
-            .article-content a { color: #2563eb; text-decoration: underline; }
-            .article-content table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-            .article-content th, .article-content td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
-            .article-content th { background: #f5f5f5; font-weight: 600; }
-            .article-content hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; }
-            .article-content strong { font-weight: 600; }
-            .article-content em { font-style: italic; }
-          `}</style>
-        </article>
+        <style>{`
+          .article-content p { margin-bottom: 1em; }
+          .article-content h1 { font-size: 2em; font-weight: bold; margin: 1em 0 0.5em; }
+          .article-content h2 { font-size: 1.5em; font-weight: bold; margin: 1em 0 0.5em; }
+          .article-content h3 { font-size: 1.25em; font-weight: 600; margin: 0.8em 0 0.4em; }
+          .article-content img { width: 100% !important; max-width: 100% !important; height: auto !important; margin: 1em 0; display: block; }
+          .article-content pre { background: #f5f5f5; padding: 1em; border-radius: 6px; overflow-x: auto; margin: 1em 0; font-size: 14px; }
+          .article-content code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+          .article-content pre code { background: none; padding: 0; }
+          .article-content blockquote { border-left: 4px solid #ddd; padding-left: 1em; margin: 1em 0; color: #666; font-style: italic; }
+          .article-content ul { list-style: disc; padding-left: 2em; margin: 1em 0; }
+          .article-content ol { list-style: decimal; padding-left: 2em; margin: 1em 0; }
+          .article-content li { margin-bottom: 0.5em; }
+          .article-content a { color: #2563eb; text-decoration: underline; }
+          .article-content table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+          .article-content th, .article-content td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+          .article-content th { background: #f5f5f5; font-weight: 600; }
+          .article-content hr { border: none; border-top: 1px solid #ddd; margin: 2em 0; }
+          .article-content strong { font-weight: 600; }
+          .article-content em { font-style: italic; }
+          /* 深色模式 */
+          .dark .article-content { color: #e2e8f0; }
+          .dark .article-content pre { background: #1e293b; }
+          .dark .article-content code { background: #334155; }
+          .dark .article-content blockquote { border-left-color: #475569; color: #94a3b8; }
+          .dark .article-content a { color: #60a5fa; }
+          .dark .article-content th, .dark .article-content td { border-color: #475569; }
+          .dark .article-content th { background: #1e293b; }
+          .dark .article-content hr { border-top-color: #475569; }
+        `}</style>
       </main>
 
       {/* Sync Dialog overlay */}

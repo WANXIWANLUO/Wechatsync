@@ -1647,6 +1647,18 @@ window.addEventListener('message', async (event) => {
       // 为每个平台分别预处理
       const platformContents = preprocessForMultiplePlatformsLocal(rawHtml, platforms, configs)
 
+      // 若编辑器以 Markdown 模式提供了原始 markdown，则让 outputFormat==='markdown'
+      // 的平台直接使用它，避免 md→html→md 往返造成的格式损耗；HTML 平台仍用 html。
+      const providedMarkdown = data.article?.markdown
+      if (providedMarkdown) {
+        for (const pid of platforms) {
+          const cfg = configs[pid]
+          if (cfg && cfg.outputFormat === 'markdown') {
+            platformContents[pid] = { ...platformContents[pid], markdown: providedMarkdown }
+          }
+        }
+      }
+
       logger.debug('Preprocessed contents for platforms:', Object.keys(platformContents))
 
       chrome.runtime.sendMessage({
@@ -1655,7 +1667,7 @@ window.addEventListener('message', async (event) => {
           ...data.article,
           // 保留一份默认内容（兼容）
           html: rawHtml,
-          markdown: htmlToMarkdownNative(rawHtml),
+          markdown: providedMarkdown || htmlToMarkdownNative(rawHtml),
           // 各平台专属预处理内容
           platformContents,
         },
