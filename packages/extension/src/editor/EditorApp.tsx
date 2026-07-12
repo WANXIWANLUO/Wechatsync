@@ -237,7 +237,7 @@ export function EditorApp() {
     <div className="bg-gray-50">
       {/* Toolbar — inner width follows article content */}
       <header className="fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50">
-        <div className="max-w-4xl mx-auto px-12 py-3 flex items-center justify-between">
+        <div className="max-w-2xl mx-auto px-10 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <img src={chrome.runtime.getURL('assets/icon-48.png')} alt="Logo" className="w-6 h-6" />
             <span className="font-medium text-gray-700">同步助手 - 点击内容可直接修改</span>
@@ -291,7 +291,7 @@ export function EditorApp() {
 
       {/* Article content area */}
       <main className="pt-16 pb-8">
-        <article className="w-full max-w-4xl mx-auto bg-white shadow-sm px-12 py-10">
+        <article className="w-full max-w-2xl mx-auto bg-white shadow-sm px-10 py-8">
           {article.cover && (
             <div className="mb-8">
               <span className="inline-block text-[10px] text-muted-foreground bg-muted/50 px-2 py-0.5 rounded mb-2">封面图</span>
@@ -328,7 +328,7 @@ export function EditorApp() {
             .article-content h1 { font-size: 2em; font-weight: bold; margin: 1em 0 0.5em; }
             .article-content h2 { font-size: 1.5em; font-weight: bold; margin: 1em 0 0.5em; }
             .article-content h3 { font-size: 1.25em; font-weight: 600; margin: 0.8em 0 0.4em; }
-            .article-content img { max-width: 100%; height: auto; margin: 1em 0; display: block; }
+            .article-content img { width: 100% !important; max-width: 100% !important; height: auto !important; margin: 1em 0; display: block; }
             .article-content pre { background: #f5f5f5; padding: 1em; border-radius: 6px; overflow-x: auto; margin: 1em 0; font-size: 14px; }
             .article-content code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
             .article-content pre code { background: none; padding: 0; }
