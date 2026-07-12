@@ -510,6 +510,37 @@ function addExtensionRules(turndownService: TurndownService): void {
       return false
     }
   })
+
+  // 居中段落：保留 text-align:center（Markdown 无等价语法），子元素正常转 MD。
+  // 不匹配 H1-H6（标题走 turndown 内置规则转 # ## 等），避免覆盖标题语义。
+  turndownService.addRule('centeredParagraph', {
+    filter: function(node) {
+      const tag = node.nodeName
+      if (tag !== 'P' && tag !== 'DIV') return false
+      const style = (node as HTMLElement).getAttribute('style') || ''
+      return /text-align\s*:\s*center/.test(style)
+    },
+    replacement: function(content) {
+      return '<p style="text-align:center">' + content + '</p>'
+    },
+  })
+
+  // 彩色文字：仅匹配行内 SPAN（不匹配块级 P/DIV/H1-H6），保留 color，子元素正常转 MD。
+  // 限定 SPAN 避免误吞标题、居中段落等块级元素，导致 turndown 内置规则失效。
+  turndownService.addRule('coloredSpan', {
+    filter: function(node) {
+      if (node.nodeName !== 'SPAN') return false
+      const style = (node as HTMLElement).getAttribute('style') || ''
+      // (?<!\w-) 负向后顾：只匹配独立的 color:，不匹配 background-color 等
+      return /(?<!\w-)color\s*:/.test(style)
+    },
+    replacement: function(content, node) {
+      const style = (node as HTMLElement).getAttribute('style') || ''
+      const m = /(?<!\w-)color\s*:\s*([^;]+)/i.exec(style)
+      if (!m) return content
+      return '<span style="color:' + m[1].trim() + '">' + content + '</span>'
+    },
+  })
 }
 
 /**

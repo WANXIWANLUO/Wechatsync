@@ -127,6 +127,12 @@ export class DoubanAdapter extends CodeAdapter {
         }
       )
 
+      // 豆瓣不支持内联样式和 HTML 标签。清理采集时保留的彩色/居中/加粗等 HTML：
+      // - <span style="color:...">文字</span> → 文字
+      // - <p style="text-align:center">文字</p> → 文字（还原为纯文本段落）
+      content = content.replace(/<span style="[^"]*">(.*?)<\/span>/gi, '$1')
+      content = content.replace(/<p style="[^"]*">(.*?)<\/p>/gi, '$1\n\n')
+
       // Markdown → Draft.js
       const draftContent = markdownToDraft(content, imageDataMap)
       const draftBlocks = typeof draftContent === 'string' ? JSON.parse(draftContent) : draftContent
@@ -176,19 +182,28 @@ export class DoubanAdapter extends CodeAdapter {
   }
 
   /**
-   * 新版：通过 URL 上传图片到豆瓣
+   * 上传图片到豆瓣图床：下载原图 → multipart 上传到 add_photo API → 返回豆瓣托管 URL
    */
   private async uploadImageByUrl(src: string): Promise<ImageUploadResult & { imageData: DoubanImageData }> {
+    // 1. 下载原始图片（二进制）
+    const imgRes = await this.runtime.fetch(src)
+    if (!imgRes.ok) throw new Error(`下载图片失败: ${imgRes.status}`)
+    const blob = await imgRes.blob()
+
+    // 2. multipart 上传到豆瓣
+    const formData = new FormData()
+    formData.append('ck', this.formData!.ck)
+    formData.append('image_file', blob)
+
     const uploadRes = await this.runtime.fetch(
-      'https://www.douban.com/j/group/topic/fetch_photo',
+      'https://www.douban.com/j/group/topic/add_photo',
       {
         method: 'POST',
         credentials: 'include',
         headers: {
-          'Content-Type': 'application/json',
           'Referer': 'https://www.douban.com/',
         },
-        body: JSON.stringify({ photo_url: src }),
+        body: formData,
       }
     )
 
@@ -223,8 +238,4 @@ export class DoubanAdapter extends CodeAdapter {
     }
   }
 
-  // 保留旧接口兼容
-  private async uploadImageWithFullData(src: string): Promise<ImageUploadResult & { imageData: DoubanImageData }> {
-    return this.uploadImageByUrl(src)
-  }
 }

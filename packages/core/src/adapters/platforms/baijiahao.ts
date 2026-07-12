@@ -229,7 +229,16 @@ export class BaijiahaoAdapter extends CodeAdapter {
   }
 
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
-    const imageResponse = await this.runtime.fetch(src)
+    // 微信图床的 webp 格式百家号不支持，改参数让 CDN 返回 JPEG
+    let downloadSrc = src
+    if (src.includes('mmbiz.qpic.cn')) {
+      const url = new URL(src)
+      url.searchParams.delete('tp')       // tp=webp 会覆盖格式
+      url.searchParams.set('wx_fmt', 'jpeg')
+      downloadSrc = url.toString()
+    }
+
+    const imageResponse = await this.runtime.fetch(downloadSrc)
     if (!imageResponse.ok) {
       throw new Error('图片下载失败: ' + src)
     }
